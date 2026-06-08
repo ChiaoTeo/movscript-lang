@@ -1,0 +1,19 @@
+{
+  "name": "movscript-lang",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "description": "MovScript AI film production language, compiler, and controlled runtime.",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "install:local": "node scripts/install-local.mjs",
+    "uninstall:local": "node scripts/install-local.mjs --uninstall",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
