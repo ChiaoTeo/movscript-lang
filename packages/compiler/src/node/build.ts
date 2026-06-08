@@ -59,6 +59,13 @@ export interface MovScriptWorkspaceChangedEntity {
   state: MovScriptWorkspaceChangeState
 }
 
+export interface MovScriptWorkspaceBusinessChange extends MovScriptWorkspaceChangedEntity {
+  title?: string
+  summary: string
+  impactAreas: string[]
+  sourcePaths: string[]
+}
+
 export interface MovScriptWorkspaceReviewResult {
   schema: 'movscript.workspace-review.v1'
   operation: 'review'
@@ -68,6 +75,7 @@ export interface MovScriptWorkspaceReviewResult {
   createdAt: string
   changedFiles: MovScriptWorkspaceChangedFile[]
   changedEntities: MovScriptWorkspaceChangedEntity[]
+  businessChanges: MovScriptWorkspaceBusinessChange[]
   issues: MovScriptWorkspaceReviewIssue[]
   readyToBuild: boolean
   summary: {
@@ -75,6 +83,7 @@ export interface MovScriptWorkspaceReviewResult {
     added: number
     modified: number
     deleted: number
+    businessChanges: number
     errors: number
     warnings: number
   }
@@ -231,12 +240,15 @@ export async function reviewMovScriptBuildWorkspace(input: MovScriptWorkspaceBui
   const editFiles = source.files
   const currentFiles = await loadBuildCurrentSourceSnapshots(input.fileRepository, source.mode)
   const changedFiles = diffWorkspaceFiles(editFiles, currentFiles)
+  const sourceGraph = buildSourceDomainGraph(editFiles)
+  const currentGraph = buildSourceDomainGraph(currentFiles)
   const issues = [
     ...validateEditableFiles(editFiles),
-    ...validateSourceDomainFiles(editFiles),
+    ...validateSourceDomainGraph(sourceGraph),
   ]
-  const changedEntities = changedEntitiesFromFiles(changedFiles, editFiles)
-  const summary = summarizeReview(changedFiles, issues)
+  const changedEntities = changedEntitiesFromFiles(changedFiles, sourceGraph, currentGraph)
+  const businessChanges = businessChangesFromChangedEntities(changedEntities, sourceGraph, currentGraph)
+  const summary = summarizeReview(changedFiles, businessChanges, issues)
   return {
     schema: 'movscript.workspace-review.v1',
     operation: 'review',
@@ -246,6 +258,7 @@ export async function reviewMovScriptBuildWorkspace(input: MovScriptWorkspaceBui
     createdAt: now.toISOString(),
     changedFiles,
     changedEntities,
+    businessChanges,
     issues,
     readyToBuild: summary.errors === 0,
     summary,
@@ -826,8 +839,11 @@ function validateEditableFiles(files: WorkspaceFileSnapshot[]): MovScriptWorkspa
 }
 
 function validateSourceDomainFiles(files: WorkspaceFileSnapshot[]): MovScriptWorkspaceReviewIssue[] {
+  return validateSourceDomainGraph(buildSourceDomainGraph(files))
+}
+
+function validateSourceDomainGraph(graph: SourceDomainGraph): MovScriptWorkspaceReviewIssue[] {
   const issues: MovScriptWorkspaceReviewIssue[] = []
-  const graph = buildSourceDomainGraph(files)
 
   for (const entry of graph.records) {
     if (!entry.file.path.endsWith('.json')) continue
@@ -1244,19 +1260,22 @@ function jsonValueEquals(left: unknown, right: unknown): boolean {
 
 function changedEntitiesFromFiles(
   changedFiles: MovScriptWorkspaceChangedFile[],
-  editFiles: WorkspaceFileSnapshot[],
+  sourceGraph: SourceDomainGraph,
+  currentGraph: SourceDomainGraph,
 ): MovScriptWorkspaceChangedEntity[] {
-  const editByPath = new Map(editFiles.map((file) => [file.path, file]))
+  const sourceByPath = new Map(sourceGraph.records.map((record) => [record.file.path, record]))
+  const currentByRelativePath = new Map(currentGraph.records.map((record) => [record.file.relativePath, record]))
   return changedFiles.flatMap((file) => {
     if (!file.path.endsWith('.json')) return []
-    const edit = editByPath.get(file.path)
-    const record = edit ? parseWorkspaceDocument(edit.path, edit.content) : undefined
-    const entity = isRecord(record) ? record : {}
-    const entityKind = entityKindFromFilePath(file.path, entity)
+    const sourceRecord = sourceByPath.get(file.path)
+    const currentRecord = currentByRelativePath.get(file.path)
+    const record = sourceRecord ?? currentRecord
+    const entity = isRecord(record?.data) ? record.data : {}
+    const entityKind = record?.entityKind ?? entityKindFromFilePath(file.path, entity)
     const id = sourceEntityStableId(entity, entityKind)
     return [{
       entityKind,
-      path: file.path,
+      path: sourceRecord?.file.path ?? file.path,
       ...(id !== undefined ? { id } : {}),
       ...(typeof entity.client_id === 'string' ? { clientId: entity.client_id } : {}),
       state: file.state,
@@ -1264,8 +1283,108 @@ function changedEntitiesFromFiles(
   })
 }
 
+function businessChangesFromChangedEntities(
+  changedEntities: MovScriptWorkspaceChangedEntity[],
+  sourceGraph: SourceDomainGraph,
+  currentGraph: SourceDomainGraph,
+): MovScriptWorkspaceBusinessChange[] {
+  return changedEntities.map((entity) => {
+    const record = sourceRecordForChangedEntity(sourceGraph, entity)
+      ?? sourceRecordForChangedEntity(currentGraph, entity)
+    const title = isRecord(record?.data) ? stringField(record.data.title) : undefined
+    return {
+      ...entity,
+      ...(title !== undefined ? { title } : {}),
+      summary: businessChangeSummary(entity, title),
+      impactAreas: businessImpactAreasForEntityKind(entity.entityKind),
+      sourcePaths: [entity.path],
+    }
+  })
+}
+
+function sourceRecordForChangedEntity(
+  graph: SourceDomainGraph,
+  entity: MovScriptWorkspaceChangedEntity,
+): SourceDomainRecord | undefined {
+  return graph.records.find((record) => {
+    return record.entityKind === entity.entityKind
+      && (record.file.path === entity.path
+        || record.file.relativePath === entity.path
+        || (record.id !== undefined && entity.id !== undefined && String(record.id) === String(entity.id)))
+  })
+}
+
+function businessChangeSummary(entity: MovScriptWorkspaceChangedEntity, title: string | undefined): string {
+  const label = title ?? String(entity.id ?? entity.path)
+  const state = businessStateVerb(entity.state)
+  return `${businessEntityLabel(entity.entityKind)} ${state}: ${label}`
+}
+
+function businessStateVerb(state: MovScriptWorkspaceChangeState): string {
+  switch (state) {
+    case 'added':
+      return 'added'
+    case 'modified':
+      return 'changed'
+    case 'deleted':
+      return 'deleted'
+    case 'unchanged':
+      return 'unchanged'
+  }
+}
+
+function businessEntityLabel(entityKind: string): string {
+  const labels: Record<string, string> = {
+    project: 'Project',
+    project_standards: 'Project standards',
+    script: 'Script',
+    script_version: 'Script version',
+    script_block: 'Script block',
+    production: 'Production',
+    segment: 'Segment',
+    scene_moment: 'Scene moment',
+    storyboard: 'Storyboard',
+    audio_cue: 'Audio cue',
+    expression_unit: 'Expression unit',
+    content_unit: 'Content unit',
+    keyframe: 'Keyframe',
+    setting: 'Setting',
+    setting_state: 'Setting state',
+    asset: 'Asset',
+  }
+  return labels[entityKind] ?? entityKind
+}
+
+function businessImpactAreasForEntityKind(entityKind: string): string[] {
+  switch (entityKind) {
+    case 'project':
+    case 'project_standards':
+    case 'script':
+    case 'script_version':
+    case 'script_block':
+      return ['workspace_context', 'generation_prompts']
+    case 'setting':
+    case 'setting_state':
+    case 'asset':
+      return ['asset_index', 'generation_context']
+    case 'production':
+    case 'segment':
+    case 'scene_moment':
+    case 'storyboard':
+    case 'audio_cue':
+    case 'expression_unit':
+      return ['planning_tree', 'preview_timeline', 'generation_prompts']
+    case 'content_unit':
+    case 'keyframe':
+      return ['content_production', 'generation_prompts', 'preview_timeline']
+    default:
+      return ['domain_index']
+  }
+}
+
 function summarizeReview(
   changedFiles: MovScriptWorkspaceChangedFile[],
+  businessChanges: MovScriptWorkspaceBusinessChange[],
   issues: MovScriptWorkspaceReviewIssue[],
 ): MovScriptWorkspaceReviewResult['summary'] {
   return {
@@ -1273,6 +1392,7 @@ function summarizeReview(
     added: changedFiles.filter((file) => file.state === 'added').length,
     modified: changedFiles.filter((file) => file.state === 'modified').length,
     deleted: changedFiles.filter((file) => file.state === 'deleted').length,
+    businessChanges: businessChanges.length,
     errors: issues.filter((issue) => issue.severity === 'error').length,
     warnings: issues.filter((issue) => issue.severity === 'warning').length,
   }
@@ -1435,6 +1555,10 @@ function idField(value: unknown): string | number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string' && value.trim()) return value.trim()
   return undefined
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
 }
 
 function sourceEntityStableId(record: Record<string, unknown>, entityKind: string): string | number | undefined {

@@ -864,6 +864,44 @@ test('workspace inspect exposes edit-impact semantics as the review-compatible r
   assert.equal(inspection.reviewAlias.operation, 'review')
   assert.equal(inspection.readyToBuild, true)
   assert.ok(inspection.changedFiles.some((file) => file.path === 'project.json' && file.state === 'modified'))
+  assert.equal(inspection.summary.businessChanges, inspection.changedEntities.length)
+  assert.ok(inspection.businessChanges.some((change) => {
+    return change.entityKind === 'project'
+      && change.title === 'Demo'
+      && change.summary === 'Project changed: Demo'
+      && change.impactAreas.includes('workspace_context')
+  }))
+})
+
+test('workspace inspect separates source document changes from business changes', async () => {
+  const files = new Map([
+    ['scripts/main/script.json', JSON.stringify({
+      schema: 'movscript.script.v1',
+      kind: 'script',
+      id: 'main',
+      title: 'Main Script',
+      source_ref: 'script.md',
+    })],
+    ['scripts/main/script.md', 'new script text\n'],
+    ['.build/current/scripts/main/script.json', JSON.stringify({
+      schema: 'movscript.script.v1',
+      kind: 'script',
+      id: 'main',
+      title: 'Main Script',
+      source_ref: 'script.md',
+    })],
+    ['.build/current/scripts/main/script.md', 'old script text\n'],
+  ])
+  const repository = memoryWorkspaceFileRepository(files)
+
+  const inspection = await inspectMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  assert.equal(inspection.summary.total, 1)
+  assert.equal(inspection.summary.businessChanges, 0)
+  assert.equal(inspection.businessChanges.length, 0)
 })
 
 test('workspace overview summarizes pending edits, build state, regeneration, and next actions', async () => {
@@ -943,6 +981,13 @@ test('workspace build removes deleted source files from current build', async ()
 
   assert.equal(review.summary.deleted, 1)
   assert.ok(review.changedFiles.some((file) => file.state === 'deleted' && file.buildPath === '.build/current/settings/removed/setting.json'))
+  assert.ok(review.businessChanges.some((change) => {
+    return change.entityKind === 'setting'
+      && change.id === 'removed'
+      && change.title === 'Removed'
+      && change.summary === 'Setting deleted: Removed'
+      && change.impactAreas.includes('asset_index')
+  }))
 
   const result = await buildMovScriptWorkspace({
     fileRepository: repository,
