@@ -15,16 +15,6 @@ import type {
   MovScriptWorkspaceBuildArtifacts,
 } from '@movscript/compiler/artifacts'
 
-export interface MovScriptEngineGenerateInput {
-  target?: {
-    kind: string
-    id?: string | number
-    path?: string
-  }
-  planId?: string
-  nodeIds?: string[]
-}
-
 export interface MovScriptEnginePublishInput {
   productionId?: string | number
   buildId?: string
@@ -138,11 +128,13 @@ export interface MovScriptEngineContentUnitInput {
 
 export interface MovScriptEngineOptions {
   workspaceService: MovScriptWorkspaceService
+  overviewWorkspace?: () => Promise<unknown>
+  inspectWorkspace?: () => Promise<unknown>
   reviewWorkspace?: () => Promise<unknown>
   compileWorkspace?: () => Promise<unknown>
+  regenerationPlan?: () => Promise<unknown>
   buildContentUnitArtifact?: (contentUnitId: string | number) => Promise<ContentUnitBuildArtifactBundle>
   buildArtifacts?: (input?: { buildId?: string; createdAt?: string }) => Promise<MovScriptWorkspaceBuildArtifacts>
-  generate?: (input: MovScriptEngineGenerateInput) => Promise<unknown>
   publish?: (input?: MovScriptEnginePublishInput) => Promise<unknown>
 }
 
@@ -191,10 +183,12 @@ export interface MovScriptEngine {
   deleteContentUnit(input: MovScriptEngineDeleteInput): Promise<{ deleted: true; entity: MovScriptWorkspaceIndexedEntity }>
   buildContentUnitArtifact(contentUnitId: string | number): Promise<ContentUnitBuildArtifactBundle>
   buildArtifacts(input?: { buildId?: string; createdAt?: string }): Promise<MovScriptWorkspaceBuildArtifacts>
+  overview(): Promise<unknown>
+  inspect(): Promise<unknown>
   review(): Promise<unknown>
   compile(): Promise<unknown>
   build(): Promise<unknown>
-  generate(input?: MovScriptEngineGenerateInput): Promise<unknown>
+  regenerationPlan(): Promise<unknown>
   publish(input?: MovScriptEnginePublishInput): Promise<unknown>
   appendCandidate(input: Omit<MovScriptInlineCandidateWriteInput, 'fileRepository'>): Promise<MovScriptInlineCandidateWriteResult>
   createAssetSlotCandidate(
@@ -212,8 +206,11 @@ export interface MovScriptEngine {
 
 export function createMovScriptEngine(options: MovScriptEngineOptions): MovScriptEngine {
   const workspaceService = options.workspaceService
+  const overviewWorkspace = options.overviewWorkspace
+  const inspectWorkspace = options.inspectWorkspace
   const reviewWorkspace = options.reviewWorkspace
   const compileWorkspace = options.compileWorkspace
+  const regenerationPlan = options.regenerationPlan
   const buildContentUnitArtifact = options.buildContentUnitArtifact
   const buildArtifacts = options.buildArtifacts
 
@@ -328,8 +325,14 @@ export function createMovScriptEngine(options: MovScriptEngineOptions): MovScrip
         'buildArtifacts',
       )
     },
+    overview() {
+      return callRequiredOperation(overviewWorkspace, 'overview')
+    },
+    inspect() {
+      return callRequiredOperation(inspectWorkspace ?? reviewWorkspace, 'inspect')
+    },
     review() {
-      return callRequiredOperation(reviewWorkspace, 'review')
+      return callRequiredOperation(inspectWorkspace ?? reviewWorkspace, 'review')
     },
     compile() {
       return callRequiredOperation(compileWorkspace, 'compile')
@@ -337,11 +340,8 @@ export function createMovScriptEngine(options: MovScriptEngineOptions): MovScrip
     build() {
       return callRequiredOperation(compileWorkspace, 'compile')
     },
-    generate(input = {}) {
-      return callRequiredOperation(
-        options.generate ? () => options.generate!(input) : undefined,
-        'generate',
-      )
+    regenerationPlan() {
+      return callRequiredOperation(regenerationPlan, 'regenerationPlan')
     },
     publish(input = {}) {
       return callRequiredOperation(

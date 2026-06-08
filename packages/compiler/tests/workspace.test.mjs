@@ -26,6 +26,9 @@ import {
 } from '../dist/index.js'
 import {
   buildMovScriptWorkspace,
+  inspectMovScriptWorkspace,
+  overviewMovScriptWorkspace,
+  planMovScriptWorkspaceRegeneration,
   reviewMovScriptBuildWorkspace,
 } from '../dist/node.js'
 import {
@@ -503,6 +506,17 @@ test('content unit integration flow writes, compiles, generates, impacts, and re
   assert.equal(staleVideo?.selected, true)
   assert.equal(staleVideo?.stale, true)
 
+  const regenerationPlan = await planMovScriptWorkspaceRegeneration({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:30.000Z'),
+  })
+  assert.equal(regenerationPlan.schema, 'movscript.workspace-regeneration-plan.v1')
+  assert.equal(regenerationPlan.status, 'ready')
+  assert.equal(regenerationPlan.build?.buildId, impactBuild.manifest.buildId)
+  assert.ok(regenerationPlan.affectedContentUnits.some((target) => target.contentUnitId === 'k41m' && target.stale === true))
+  assert.ok(regenerationPlan.promptBundles.some((target) => target.contentUnitId === 'k41m'))
+  assert.ok(regenerationPlan.previewTimelines.some((target) => target.productionId === 'p8f3'))
+
   const regeneratedVideoInput = await service.readContentUnitInputVersion('k41m')
   const regeneratedVideoPanel = await service.readContentUnitRuntimePanel('k41m')
   assert.notEqual(regeneratedVideoInput?.hash, secondVideoInput?.hash)
@@ -833,6 +847,53 @@ test('compiler build reads hierarchical source root and writes derived artifacts
   assert.equal(selectionValidity.selected, false)
   assert.equal(editorState.contentUnitRuntimePanels.some((panel) => panel.contentUnitId === 'k41m'), true)
   assert.ok(impactReport.changedEntities.some((entity) => entity.entityKind === 'content_unit' && entity.editorImpacts.some((impact) => impact.includes('Content production context'))))
+})
+
+test('workspace inspect exposes edit-impact semantics as the review-compatible read model', async () => {
+  const files = new Map(sourceFileEntries())
+  files.set('.build/current/project.json', JSON.stringify({ schema: 'movscript.project.v1', kind: 'project', project_id: 'project_demo', title: 'Old Demo' }))
+  const repository = memoryWorkspaceFileRepository(files)
+
+  const inspection = await inspectMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  assert.equal(inspection.schema, 'movscript.workspace-inspection.v1')
+  assert.equal(inspection.operation, 'inspect')
+  assert.equal(inspection.reviewAlias.operation, 'review')
+  assert.equal(inspection.readyToBuild, true)
+  assert.ok(inspection.changedFiles.some((file) => file.path === 'project.json' && file.state === 'modified'))
+})
+
+test('workspace overview summarizes pending edits, build state, regeneration, and next actions', async () => {
+  const files = new Map(sourceFileEntries())
+  const repository = memoryWorkspaceFileRepository(files)
+
+  const beforeBuild = await overviewMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  assert.equal(beforeBuild.schema, 'movscript.workspace-overview.v1')
+  assert.equal(beforeBuild.workspace.projectId, 'project_demo')
+  assert.equal(beforeBuild.build.status, 'missing')
+  assert.equal(beforeBuild.source.hasPendingEdits, true)
+  assert.ok(beforeBuild.nextActions.includes('compile'))
+
+  await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:01:00.000Z'),
+  })
+
+  const afterBuild = await overviewMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:02:00.000Z'),
+  })
+
+  assert.equal(afterBuild.build.status, 'current')
+  assert.equal(afterBuild.source.hasPendingEdits, false)
+  assert.equal(afterBuild.build.lastBuildId, 'build_20260607000100000')
 })
 
 test('workspace review treats script markdown as document source, not semantic entity', async () => {

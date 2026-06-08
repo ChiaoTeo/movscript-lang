@@ -1,7 +1,7 @@
 {
   "name": "@movscript/compiler",
   "version": "0.1.0",
-  "description": "MovScript compiler facade for review, compile, impact analysis, and artifact emission.",
+  "description": "MovScript compiler facade for overview, inspect, compile, regeneration planning, impact analysis, and artifact emission.",
   "license": "MIT",
   "type": "module",
   "repository": {

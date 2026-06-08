@@ -1,7 +1,7 @@
 {
   "name": "@movscript/engine",
   "version": "0.1.0",
-  "description": "Embeddable MovScript engine facade for workspace, compiler, runtime, and provider workflows.",
+  "description": "Embeddable MovScript engine facade for workspace, compiler, stores, and candidate workflows.",
   "license": "MIT",
   "type": "module",
   "repository": {

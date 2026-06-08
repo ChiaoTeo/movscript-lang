@@ -95,22 +95,6 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/runtime:
-    dependencies:
-      '@movscript/workspace':
-        specifier: workspace:*
-        version: link:../workspace
-    devDependencies:
-      '@types/node':
-        specifier: 22.19.17
-        version: 22.19.17
-      tsup:
-        specifier: 8.5.1
-        version: 8.5.1(typescript@5.9.3)
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-
   packages/service:
     dependencies:
       '@movscript/engine':

@@ -1,7 +1,7 @@
 {
   "name": "@movscript/service",
   "version": "0.1.0",
-  "description": "MovScript service facade for compiler and runtime workflows.",
+  "description": "MovScript service facade for compiler and workspace workflows.",
   "license": "MIT",
   "type": "module",
   "repository": {

@@ -1,5 +1,8 @@
 export {
   buildMovScriptWorkspace,
+  inspectMovScriptWorkspace,
+  overviewMovScriptWorkspace,
+  planMovScriptWorkspaceRegeneration,
   reviewMovScriptBuildWorkspace,
   type MovScriptWorkspaceBuildInput,
   type MovScriptWorkspaceBuildManifest,
@@ -8,6 +11,10 @@ export {
   type MovScriptWorkspaceChangedFile,
   type MovScriptWorkspaceChangeState,
   type MovScriptWorkspaceIssueSeverity,
+  type MovScriptWorkspaceInspectionResult,
+  type MovScriptWorkspaceOverviewResult,
+  type MovScriptWorkspaceRegenerationPlanResult,
+  type MovScriptWorkspaceRegenerationTarget,
   type MovScriptWorkspaceReviewIssue,
   type MovScriptWorkspaceReviewResult,
 } from './node/build.js'

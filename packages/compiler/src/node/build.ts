@@ -504,6 +504,181 @@ export async function planMovScriptWorkspaceRegeneration(input: MovScriptWorkspa
   }
 }
 
+interface LatestBuildManifest {
+  path: string
+  manifest: MovScriptWorkspaceBuildManifest
+}
+
+interface ContentUnitSelectionValiditySnapshot {
+  contentUnitId?: string | number
+  contentUnitPath?: string
+  selected?: boolean
+  stale?: boolean
+  candidateId?: string | number
+  resourceId?: string | number
+  currentInputHash?: string
+  acceptedInputHash?: string
+}
+
+async function loadLatestBuildManifest(
+  fileRepository: MovScriptWorkspaceFileRepository,
+): Promise<LatestBuildManifest | undefined> {
+  const files = await loadWorkspaceFileSnapshots(fileRepository, MOVSCRIPT_BUILD_MANIFESTS_DIR)
+  const manifests = (await Promise.all(files
+    .filter((file) => file.path.endsWith('.json'))
+    .map(async (file): Promise<LatestBuildManifest | undefined> => {
+      const manifest = parseWorkspaceDocument(file.path, file.content)
+      if (!isBuildManifest(manifest)) return undefined
+      return { path: file.path, manifest }
+    })))
+    .filter((item): item is LatestBuildManifest => item !== undefined)
+  return manifests.sort((left, right) => {
+    return right.manifest.builtAt.localeCompare(left.manifest.builtAt)
+      || right.manifest.buildId.localeCompare(left.manifest.buildId)
+  })[0]
+}
+
+async function readJsonFile<T>(
+  fileRepository: MovScriptWorkspaceFileRepository,
+  path: string,
+): Promise<T | undefined> {
+  try {
+    const file = await fileRepository.read({ path })
+    return JSON.parse(file.content) as T
+  } catch {
+    return undefined
+  }
+}
+
+async function loadContentUnitSelectionValidity(
+  fileRepository: MovScriptWorkspaceFileRepository,
+): Promise<ContentUnitSelectionValiditySnapshot[]> {
+  const currentFiles = await loadWorkspaceFileSnapshots(fileRepository, MOVSCRIPT_BUILD_CURRENT_DIR)
+  const snapshots: ContentUnitSelectionValiditySnapshot[] = []
+  for (const file of currentFiles.filter((item) => item.relativePath.startsWith('content_units/') && item.relativePath.endsWith('/selection_validity.json'))) {
+    const record = parseWorkspaceDocument(file.path, file.content)
+    if (!isRecord(record)) continue
+    const contentUnitRef = typeof record.content_unit_ref === 'string' ? normalizeWorkspacePath(record.content_unit_ref) : undefined
+    const contentUnitId = contentUnitRef?.split('/')[1]
+    snapshots.push({
+      ...(contentUnitId !== undefined ? { contentUnitId } : {}),
+      ...(contentUnitRef !== undefined ? { contentUnitPath: contentUnitRef } : {}),
+      ...(typeof record.selected === 'boolean' ? { selected: record.selected } : {}),
+      ...(typeof record.stale === 'boolean' ? { stale: record.stale } : {}),
+      ...(idField(record.candidate_id) !== undefined ? { candidateId: idField(record.candidate_id) } : {}),
+      ...(idField(record.resource_id) !== undefined ? { resourceId: idField(record.resource_id) } : {}),
+      ...(typeof record.current_input_hash === 'string' ? { currentInputHash: record.current_input_hash } : {}),
+      ...(typeof record.accepted_input_hash === 'string' ? { acceptedInputHash: record.accepted_input_hash } : {}),
+    })
+  }
+  return snapshots
+}
+
+function affectedContentUnitTargets(
+  changedEntities: MovScriptImpactReportArtifact['changedEntities'],
+  selectionValidity: ContentUnitSelectionValiditySnapshot[],
+): MovScriptWorkspaceRegenerationTarget[] {
+  const targets = new Map<string, MovScriptWorkspaceRegenerationTarget>()
+  for (const entity of changedEntities) {
+    for (const contentUnit of entity.affectedContentUnits) {
+      const key = entityRefTargetKey(contentUnit)
+      const target = targets.get(key) ?? {
+        ...(contentUnit.id !== undefined ? { contentUnitId: contentUnit.id } : {}),
+        ...(contentUnit.path !== undefined ? { contentUnitPath: entityDir(contentUnit.path) } : {}),
+        reasons: [],
+      }
+      for (const reason of entity.staleMarkers.length > 0 ? entity.staleMarkers : entity.editorImpacts) {
+        if (!target.reasons.includes(reason)) target.reasons.push(reason)
+      }
+      targets.set(key, target)
+    }
+  }
+  for (const selection of selectionValidity) {
+    const key = String(selection.contentUnitId ?? selection.contentUnitPath ?? '')
+    if (!key) continue
+    const target = targets.get(key) ?? {
+      ...(selection.contentUnitId !== undefined ? { contentUnitId: selection.contentUnitId } : {}),
+      ...(selection.contentUnitPath !== undefined ? { contentUnitPath: selection.contentUnitPath } : {}),
+      reasons: [],
+    }
+    Object.assign(target, selection)
+    if (selection.stale && !target.reasons.includes('selected output input hash is stale')) {
+      target.reasons.push('selected output input hash is stale')
+    }
+    if (selection.stale || target.reasons.length > 0) targets.set(key, target)
+  }
+  return [...targets.values()].sort((left, right) => String(left.contentUnitId ?? left.contentUnitPath ?? '').localeCompare(String(right.contentUnitId ?? right.contentUnitPath ?? '')))
+}
+
+function previewTimelineTargets(
+  changedEntities: MovScriptImpactReportArtifact['changedEntities'],
+): MovScriptWorkspaceRegenerationPlanResult['previewTimelines'] {
+  const targets = new Map<string, { productionId?: string | number; path?: string; reasons: string[] }>()
+  for (const entity of changedEntities) {
+    const previewImpacts = entity.editorImpacts.filter((impact) => impact.toLowerCase().includes('preview timeline'))
+    const productionId = productionIdFromEntityPath(entity.path)
+    const affectsPreviewTimeline = previewImpacts.length > 0
+      || (productionId !== undefined && entity.affectedContentUnits.length > 0)
+    if (!affectsPreviewTimeline) continue
+    const key = productionId === undefined ? entity.path : String(productionId)
+    const target = targets.get(key) ?? {
+      ...(productionId !== undefined ? { productionId } : {}),
+      ...(productionId !== undefined ? { path: `${MOVSCRIPT_BUILD_CURRENT_DIR}/productions/${entityPathSlug(productionId, 'production')}/preview_timeline.json` } : {}),
+      reasons: [],
+    }
+    const reasons = previewImpacts.length > 0
+      ? previewImpacts
+      : ['Preview timeline items using affected content units may be stale.']
+    for (const impact of reasons) {
+      if (!target.reasons.includes(impact)) target.reasons.push(impact)
+    }
+    targets.set(key, target)
+  }
+  return [...targets.values()].sort((left, right) => String(left.productionId ?? left.path ?? '').localeCompare(String(right.productionId ?? right.path ?? '')))
+}
+
+function projectInfoFromSource(source: WorkspaceSourceSnapshot): { projectId?: string | number; title?: string } {
+  const projectFile = source.files.find((file) => file.relativePath === 'project.json')
+  const project = projectFile ? parseWorkspaceDocument(projectFile.path, projectFile.content) : undefined
+  if (!isRecord(project)) return {}
+  return {
+    ...(idField(project.project_id ?? project.ID ?? project.id) !== undefined ? { projectId: idField(project.project_id ?? project.ID ?? project.id) } : {}),
+    ...(typeof project.title === 'string' ? { title: project.title } : {}),
+  }
+}
+
+function nextActionsForOverview(
+  inspection: MovScriptWorkspaceInspectionResult,
+  regeneration: MovScriptWorkspaceRegenerationPlanResult,
+  buildStatus: MovScriptWorkspaceOverviewResult['build']['status'],
+): string[] {
+  if (!inspection.readyToBuild) return ['inspect']
+  if (buildStatus !== 'current') return ['inspect', 'compile']
+  if (regeneration.summary.staleContentUnits > 0 || regeneration.summary.affectedContentUnits > 0) return ['regen plan']
+  return []
+}
+
+function isBuildManifest(value: unknown): value is MovScriptWorkspaceBuildManifest {
+  return isRecord(value)
+    && value.schema === 'movscript.workspace-build.v1'
+    && typeof value.buildId === 'string'
+    && typeof value.builtAt === 'string'
+    && isRecord(value.output)
+}
+
+function entityRefTargetKey(ref: MovScriptDomainEntityRef): string {
+  return String(ref.id ?? (ref.path ? entityDir(ref.path) : ''))
+}
+
+function productionIdFromEntityPath(path: string): string | undefined {
+  const parts = normalizeWorkspacePath(path).split('/')
+  return parts[0] === 'productions' ? parts[1] : undefined
+}
+
+function entityDir(path: string): string {
+  return normalizeWorkspacePath(path).replace(/\/[^/]+$/, '')
+}
+
 async function loadWorkspaceFileSnapshots(
   fileRepository: MovScriptWorkspaceFileRepository,
   rootPath: string,

@@ -1,6 +1,6 @@
 # MovScript Lang
 
-MovScript Lang defines the AI film production language, compiler, and controlled runtime.
+MovScript Lang defines the AI film production language, compiler, and workspace artifacts.
 
 The project is intentionally separate from the MovScript application shell. Its job is to stabilize the core production semantics first:
 
@@ -9,7 +9,7 @@ The project is intentionally separate from the MovScript application shell. Its 
 - diagnostics
 - dependency and impact analysis
 - generation planning
-- runtime execution boundaries
+- external resource candidate boundaries
 - stable artifacts and publishing
 
 The repository uses the `@movscript/*` npm scope.
@@ -19,13 +19,12 @@ The repository uses the `@movscript/*` npm scope.
 - `@movscript/language`: source schemas, domain IR, schema registry, and diagnostics.
 - `@movscript/decision`: candidate selection and lock semantics consumed by the compiler.
 - `@movscript/workspace`: workspace facade for layout, repositories, source/build stores, decision persistence, node adapters, and workspace services.
-- `@movscript/compiler`: compiler-facing facade for review, compile, artifact emission, and build semantics.
-- `@movscript/runtime`: runtime-facing facade for generation provider contracts, jobs, attempts, and candidate outputs.
-- `@movscript/engine`: embeddable facade that composes workspace, compiler, runtime, stores, and provider hooks.
+- `@movscript/compiler`: compiler-facing facade for overview, inspect, compile, regeneration planning, artifact emission, and build semantics.
+- `@movscript/engine`: embeddable facade that composes workspace, compiler, stores, and candidate workflows.
 - `@movscript/service`: optional service-facing host facade for engine workflows.
 - `@movscript/cli`: CLI entrypoint for inspecting and running engine workflows.
 
-The language package does not provide plugins, does not expose MCP, and does not depend on a backend. AI generation is represented through provider contracts so concrete services can implement execution without leaking integration assumptions into the language layer.
+The language package does not provide plugins, does not expose MCP, does not call generation providers, and does not depend on a backend. External services can generate resources separately and write candidates back into the workspace without leaking integration assumptions into the language layer.
 
 ## Commands
 
@@ -108,7 +107,7 @@ movscript-lang content-unit add \
 
 You can also pass ids with `--production`, `--segment`, `--scene-moment`, `--storyboard`, and `--audio-cue` instead of full paths.
 
-Add an existing runtime resource to a target's candidate list without running a provider:
+Add an existing external resource to a target's candidate list:
 
 ```sh
 movscript-lang candidate add settings/hero/assets/portrait/asset.json \
@@ -124,10 +123,19 @@ Use `--kind asset|keyframe|content_unit` when the target kind cannot be inferred
 The CLI should stay a forwarding layer. Compiler behavior lives in `@movscript/compiler`, `@movscript/engine` wires it to the node workspace, and `@movscript/cli` forwards commands to the engine facade.
 
 ```sh
-movscript-lang compiler review
+movscript-lang overview
+movscript-lang inspect
 movscript-lang compiler compile
+movscript-lang regen plan
 movscript-lang compiler prompt <contentUnitId>
 movscript-lang compiler artifacts --build-id local_preview
 ```
 
-`movscript-lang review` and `movscript-lang compile` remain top-level shortcuts for `movscript-lang compiler review` and `movscript-lang compiler compile`. Compile writes stable build artifacts under `.build/current` only when review passes; failed builds do not overwrite the last successful build.
+The compiler workflow follows the user's editing loop:
+
+- `overview`: show the workspace state, last build state, pending edits, stale generated outputs, and next actions.
+- `inspect`: show what changed since the last successful build, diagnostics, and predicted impact without writing build artifacts.
+- `compile`: accept the current source as the next stable build snapshot and write deterministic artifacts.
+- `regen plan`: after compile, show prompt bundles and generated outputs that may need regeneration.
+
+`movscript-lang review` remains a compatibility alias for `movscript-lang inspect`. `movscript-lang compile` remains a top-level shortcut for `movscript-lang compiler compile`. Compile writes stable build artifacts under `.build/current` only when inspect passes; failed builds do not overwrite the last successful build.

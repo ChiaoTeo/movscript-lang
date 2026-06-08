@@ -6,6 +6,9 @@ import {
 } from '@movscript/workspace/node'
 import {
   buildMovScriptWorkspace,
+  inspectMovScriptWorkspace,
+  overviewMovScriptWorkspace,
+  planMovScriptWorkspaceRegeneration,
   reviewMovScriptBuildWorkspace,
 } from '@movscript/compiler/node'
 import {
@@ -19,7 +22,6 @@ import {
 } from './index.js'
 
 export interface NodeMovScriptEngineInput extends NodeMovScriptWorkspaceServiceInput {
-  generate?: MovScriptEngineOptions['generate']
   publish?: MovScriptEngineOptions['publish']
 }
 
@@ -33,11 +35,23 @@ export function createNodeMovScriptEngine(input: NodeMovScriptEngineInput = {}):
   const fileRepository = createNodeMovScriptWorkspaceFileRepository(workspaceService.projectDir)
   const engine = createMovScriptEngine({
     workspaceService,
+    overviewWorkspace: () => overviewMovScriptWorkspace({
+      fileRepository,
+      ...(input.now ? { now: input.now() } : {}),
+    }),
+    inspectWorkspace: () => inspectMovScriptWorkspace({
+      fileRepository,
+      ...(input.now ? { now: input.now() } : {}),
+    }),
     reviewWorkspace: () => reviewMovScriptBuildWorkspace({
       fileRepository,
       ...(input.now ? { now: input.now() } : {}),
     }),
     compileWorkspace: () => buildMovScriptWorkspace({
+      fileRepository,
+      ...(input.now ? { now: input.now() } : {}),
+    }),
+    regenerationPlan: () => planMovScriptWorkspaceRegeneration({
       fileRepository,
       ...(input.now ? { now: input.now() } : {}),
     }),
@@ -59,7 +73,6 @@ export function createNodeMovScriptEngine(input: NodeMovScriptEngineInput = {}):
         createdAt,
       })
     },
-    ...(input.generate ? { generate: input.generate } : {}),
     ...(input.publish ? { publish: input.publish } : {}),
   })
   return {

@@ -155,11 +155,6 @@ interface AddExpressionUnitOptions extends WorkspaceOptions {
 interface InteractiveOptions extends WorkspaceOptions {
 }
 
-interface GenerateOptions extends WorkspaceOptions {
-  nodeId?: string[]
-  planId?: string
-}
-
 interface SelectOptions extends WorkspaceOptions {
   kind?: string
   targetKind?: string
@@ -224,7 +219,7 @@ export function createMovScriptLangCommand(): Command {
   const program = new Command()
   program
     .name('movscript-lang')
-    .description('MovScript AI film production language compiler and runtime CLI')
+    .description('MovScript AI film production language compiler CLI')
     .version('0.1.0')
     .usage('[command] [options]')
     .option('--json', 'Print JSON output')
@@ -236,8 +231,10 @@ Examples:
   $ movscript-lang project demo create --cwd ./demo
   $ movscript-lang setting add hero --title "Hero"
   $ movscript-lang asset add --setting hero --slot portrait --prompt "cinematic portrait"
-  $ movscript-lang review
+  $ movscript-lang overview
+  $ movscript-lang inspect
   $ movscript-lang compile
+  $ movscript-lang regen plan
 `)
 
   program
@@ -931,7 +928,7 @@ Examples:
   contentUnit
     .command('status <idOrPath>')
     .alias('panel')
-    .description('Show source and compiled runtime status for a content unit')
+    .description('Show source and compiled generation status for a content unit')
     .option('--json', 'Print JSON output')
     .action(async (idOrPath: string, options: WorkspaceOptions, command: Command) => {
       const merged = mergeGlobalOptions(options, command)
@@ -1074,11 +1071,27 @@ Examples:
     .description('Run compiler workflows')
 
   compiler
-    .command('review')
-    .description('Review source changes against the last successful build')
+    .command('overview')
+    .description('Show the workspace overview and next compiler actions')
     .option('--json', 'Print JSON output')
     .action((options: WorkspaceOptions, command: Command) => {
-      return reviewWorkspaceFromCliOptions(options, command)
+      return overviewWorkspaceFromCliOptions(options, command)
+    })
+
+  compiler
+    .command('inspect')
+    .description('Inspect source edits, diagnostics, and predicted impact')
+    .option('--json', 'Print JSON output')
+    .action((options: WorkspaceOptions, command: Command) => {
+      return inspectWorkspaceFromCliOptions(options, command)
+    })
+
+  compiler
+    .command('review')
+    .description('Alias for inspect')
+    .option('--json', 'Print JSON output')
+    .action((options: WorkspaceOptions, command: Command) => {
+      return inspectWorkspaceFromCliOptions(options, command)
     })
 
   compiler
@@ -1115,12 +1128,42 @@ Examples:
       printResult(result, merged)
     })
 
-  program
-    .command('review')
-    .description('Review source changes against the last successful build')
+  const compilerRegen = compiler
+    .command('regen')
+    .alias('regenerate')
+    .description('Inspect regeneration work after compile')
+
+  compilerRegen
+    .command('plan')
+    .description('Show generated outputs and prompt bundles that may need regeneration')
     .option('--json', 'Print JSON output')
     .action((options: WorkspaceOptions, command: Command) => {
-      return reviewWorkspaceFromCliOptions(options, command)
+      return regenerationPlanFromCliOptions(options, command)
+    })
+
+  program
+    .command('overview')
+    .alias('status')
+    .description('Show the workspace overview and next compiler actions')
+    .option('--json', 'Print JSON output')
+    .action((options: WorkspaceOptions, command: Command) => {
+      return overviewWorkspaceFromCliOptions(options, command)
+    })
+
+  program
+    .command('inspect')
+    .description('Inspect source edits, diagnostics, and predicted impact')
+    .option('--json', 'Print JSON output')
+    .action((options: WorkspaceOptions, command: Command) => {
+      return inspectWorkspaceFromCliOptions(options, command)
+    })
+
+  program
+    .command('review')
+    .description('Alias for inspect')
+    .option('--json', 'Print JSON output')
+    .action((options: WorkspaceOptions, command: Command) => {
+      return inspectWorkspaceFromCliOptions(options, command)
     })
 
   program
@@ -1132,34 +1175,31 @@ Examples:
       return compileWorkspaceFromCliOptions(options, command)
     })
 
-  program
-    .command('generate <target>')
-    .description('Trigger generation for a target')
-    .option('--plan-id <id>', 'Generation plan id')
-    .option('--node-id <id>', 'Generation node id, repeatable', collectOption, [])
+  const regen = program
+    .command('regen')
+    .alias('regenerate')
+    .description('Inspect regeneration work after compile')
+
+  regen
+    .command('plan')
+    .description('Show generated outputs and prompt bundles that may need regeneration')
     .option('--json', 'Print JSON output')
-    .action(async (target: string, options: GenerateOptions, command: Command) => {
-      const merged = mergeGlobalOptions(options, command)
-      const result = await createCliEngine(merged).generate({
-        target: parseGenerationTarget(target),
-        ...(options.planId !== undefined ? { planId: options.planId } : {}),
-        ...(options.nodeId?.length ? { nodeIds: options.nodeId } : {}),
-      })
-      printResult(result, merged)
+    .action((options: WorkspaceOptions, command: Command) => {
+      return regenerationPlanFromCliOptions(options, command)
     })
 
   const candidate = program
     .command('candidate')
-    .description('Manage runtime candidates')
+    .description('Manage generated and external candidates')
 
   candidate
     .command('add <target>')
-    .description('Manually add a runtime resource as a content_unit candidate')
+    .description('Manually add an external resource as a content_unit candidate')
     .option('--id <id>', 'Candidate id; generated from resource id when omitted')
     .option('--kind <kind>', 'Candidate output kind or content_unit_type hint')
     .option('--output-kind <kind>', 'Candidate output kind: image, video, audio, text, or metadata')
     .option('--target-kind <kind>', 'Target kind override; defaults to content_unit for id targets')
-    .option('--resource-id <id>', 'Runtime resource id to add as a candidate')
+    .option('--resource-id <id>', 'External resource id to add as a candidate')
     .option('--source <source>', 'Candidate source label', 'manual')
     .option('--notes <text>', 'Candidate notes')
     .option('--metadata <key=value...>', 'Candidate metadata field, repeatable', collectOption, [])
@@ -1573,11 +1613,21 @@ function demoProjectFileEntries(projectId: string, title: string): Array<[string
   ]
 }
 
-async function reviewWorkspaceFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
+async function overviewWorkspaceFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
   const merged = mergeGlobalOptions(options, command)
-  const result = await createCliEngine(merged).review()
+  const result = await createCliEngine(merged).overview()
+  printResult(result, merged)
+}
+
+async function inspectWorkspaceFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
+  const merged = mergeGlobalOptions(options, command)
+  const result = await createCliEngine(merged).inspect()
   printResult(result, merged)
   if (isRecord(result) && result.readyToBuild === false) process.exitCode = 2
+}
+
+async function reviewWorkspaceFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
+  return inspectWorkspaceFromCliOptions(options, command)
 }
 
 async function compileWorkspaceFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
@@ -1585,6 +1635,12 @@ async function compileWorkspaceFromCliOptions(options: WorkspaceOptions, command
   const result = await createCliEngine(merged).compile()
   printResult(result, merged)
   if (isRecord(result) && result.status === 'failed') process.exitCode = 2
+}
+
+async function regenerationPlanFromCliOptions(options: WorkspaceOptions, command: Command): Promise<void> {
+  const merged = mergeGlobalOptions(options, command)
+  const result = await createCliEngine(merged).regenerationPlan()
+  printResult(result, merged)
 }
 
 async function runInteractiveCli(options: WorkspaceOptions): Promise<void> {
@@ -1728,14 +1784,28 @@ async function dispatchInteractiveSlashCommand(line: string, options: WorkspaceO
     await dispatchInteractiveCompilerCommand(args, options, engine)
     return false
   }
+  if (command === 'overview' || command === 'status') {
+    const result = await engine.overview()
+    printResult(result, options)
+    return false
+  }
+  if (command === 'inspect') {
+    const result = await engine.inspect()
+    printResult(result, options)
+    return false
+  }
   if (command === 'review') {
-    const result = await engine.review()
+    const result = await engine.inspect()
     printResult(result, options)
     return false
   }
   if (command === 'compile' || command === 'build') {
     const result = await engine.compile()
     printResult(result, options)
+    return false
+  }
+  if (command === 'regen' || command === 'regenerate') {
+    await dispatchInteractiveRegenerationCommand(args, options, engine)
     return false
   }
 
@@ -1745,8 +1815,13 @@ async function dispatchInteractiveSlashCommand(line: string, options: WorkspaceO
 async function dispatchInteractiveCompilerCommand(args: string[], options: WorkspaceOptions, engine: CliEngine): Promise<void> {
   const action = args.shift()
   const parsed = parseSlashOptions(args)
-  if (action === 'review' || action === undefined) {
-    const result = await engine.review()
+  if (action === 'overview') {
+    const result = await engine.overview()
+    printResult(result, options)
+    return
+  }
+  if (action === 'inspect' || action === 'review' || action === undefined) {
+    const result = await engine.inspect()
     printResult(result, options)
     return
   }
@@ -1772,7 +1847,21 @@ async function dispatchInteractiveCompilerCommand(args: string[], options: Works
     printResult(result, options)
     return
   }
+  if (action === 'regen' || action === 'regenerate') {
+    await dispatchInteractiveRegenerationCommand(args, options, engine)
+    return
+  }
   throw new Error(`unknown /compiler action: ${action}`)
+}
+
+async function dispatchInteractiveRegenerationCommand(args: string[], options: WorkspaceOptions, engine: CliEngine): Promise<void> {
+  const action = args.shift()
+  if (action === 'plan' || action === undefined) {
+    const result = await engine.regenerationPlan()
+    printResult(result, options)
+    return
+  }
+  throw new Error(`unknown /regen action: ${action}`)
 }
 
 async function dispatchInteractiveProjectCommand(args: string[], options: WorkspaceOptions, engine: CliEngine): Promise<void> {
@@ -2176,12 +2265,17 @@ function printInteractiveHelp(): void {
   /entity list [entityKind] [--kind <kind>] [--query <text>] [--limit <n>]
   /candidate add <content-unit> <resource-id> [--kind <output-kind|content_unit_type>] [--id <id>] [--source <source>] [--notes <text>]
   /candidate select <content-unit> <candidate-id> [--reason <text>]
-  /compiler review
+  /overview
+  /inspect
+  /compiler overview
+  /compiler inspect
   /compiler compile
+  /compiler regen plan
   /compiler prompt <contentUnitId>
   /compiler artifacts [--build-id <id>] [--created-at <iso>]
   /review
   /compile
+  /regen plan
   /help
   /exit`)
 }
@@ -2867,18 +2961,6 @@ function parseCommandLine(inputValue: string): string[] {
   if (quote) throw new Error('unterminated quoted string')
   if (current) args.push(current)
   return args
-}
-
-function parseGenerationTarget(value: string): { kind: string; id?: string; path?: string } {
-  const separator = value.indexOf(':')
-  if (separator > 0) {
-    const kind = value.slice(0, separator)
-    const target = value.slice(separator + 1)
-    if (target.includes('/')) return { kind, path: target }
-    if (target) return { kind, id: target }
-  }
-  if (value.includes('/')) return { kind: inferTargetKind(value), path: value }
-  throw new Error('target must use kind:id or a target path')
 }
 
 function targetPathFromSelectionTarget(value: string): string {
