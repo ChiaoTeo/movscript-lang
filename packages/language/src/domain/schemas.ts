@@ -37,6 +37,12 @@ function strictObjectSchema(required: string[], properties: Record<string, unkno
 }
 
 const sourceRefSchema = { type: 'string', minLength: 1 }
+const transitionSchema = objectSchema([], {
+  in: { type: 'string' },
+  out: { type: 'string' },
+  notes: { type: 'string' },
+})
+
 export const projectEntitySchema = {
   id: 'movscript.project.v1',
   entityKind: 'project',
@@ -47,7 +53,6 @@ export const projectEntitySchema = {
     schema: { const: 'movscript.project.v1' },
     kind: { const: 'project' },
     project_id: { type: 'string', minLength: 1 },
-    project_name: { type: 'string', minLength: 1 },
     title: { type: 'string' },
     description: { type: 'string' },
     project_kind: { type: 'string' },
@@ -204,8 +209,9 @@ export const productionEntitySchema = {
   status: 'active',
   jsonSchema: entitySchema('production', ['title'], {
     production_kind: { type: 'string' },
+    transition: transitionSchema,
   }),
-  promptSummary: 'Production is a makeable video unit. It owns ordered segment planning structure.',
+  promptSummary: 'Production is a makeable video unit. It owns ordered segment planning structure and production-level transition boundaries.',
   examples: [{
     title: 'episode',
     content: { schema: 'movscript.production.v1', kind: 'production', id: 'p8f3', title: 'Episode 1' },
@@ -222,8 +228,9 @@ export const segmentEntitySchema = {
     segment_kind: { enum: ['emotional_function', 'rhythm_shift', 'dramatic_function', 'setup', 'escalation', 'release', 'reversal', 'transition'] },
     emotional_intent: { type: 'string' },
     rhythm: { type: 'string' },
+    transition: transitionSchema,
   }),
-  promptSummary: 'Segment is a rhythm section inside a production. Directory id is stable; order lives in segment.json.',
+  promptSummary: 'Segment is a rhythm section inside a production. Directory id is stable; order and segment-level transition boundaries live in segment.json.',
   examples: [{
     title: 'opening',
     content: { schema: 'movscript.segment.v1', kind: 'segment', id: 'a19d', title: 'Opening pressure', order: 1 },
@@ -241,29 +248,9 @@ export const sceneMomentEntitySchema = {
     where: { type: 'string' },
     action: { type: 'string' },
     emotion: { type: 'string' },
-    storyboard_timing: objectSchema([], {
-      items: {
-        type: 'array',
-        items: objectSchema(['storyboard_id', 'order'], {
-          storyboard_id: { type: 'string', minLength: 1 },
-          order: { type: 'number' },
-          gap_after_sec: { type: 'number' },
-          caption: { type: 'string' },
-        }),
-      },
-      audio: objectSchema([], {
-        note: { type: 'string' },
-        music: { type: 'string' },
-        sound_effects: { type: 'array', items: { type: 'string' } },
-      }),
-      transition: objectSchema([], {
-        in: { type: 'string' },
-        out: { type: 'string' },
-        notes: { type: 'string' },
-      }),
-    }),
+    transition: transitionSchema,
   }),
-  promptSummary: 'Scene moment is planning context. storyboard_timing orders storyboards; audio and transition live at scene moment timing level.',
+  promptSummary: 'Scene moment is planning context. It owns only scene-level transition boundaries; storyboard ordering lives on storyboard entities and audio cues are independent objects.',
   examples: [{
     title: 'call',
     content: {
@@ -272,11 +259,7 @@ export const sceneMomentEntitySchema = {
       id: 'r72k',
       title: 'Hero hears the unknown call',
       order: 1,
-      storyboard_timing: {
-        items: [{ storyboard_id: 'main', order: 1 }],
-        audio: { note: 'Rain is low; phone vibration is prominent.' },
-        transition: { out: 'hold_then_cut' },
-      },
+      transition: { out: 'hold_then_cut' },
     },
   }],
 } satisfies SemanticEntitySchemaDefinition
@@ -288,6 +271,12 @@ export const storyboardEntitySchema = {
   version: '1.0.0',
   status: 'active',
   jsonSchema: entitySchema('storyboard', [], {
+    transition: transitionSchema,
+    timeline: objectSchema([], {
+      gap_after_sec: { type: 'number' },
+      caption: { type: 'string' },
+      duration_sec: { type: 'number' },
+    }),
     setting_refs: {
       type: 'array',
       items: objectSchema(['setting_id'], {
@@ -314,7 +303,7 @@ export const storyboardEntitySchema = {
     continuity: { type: 'object', additionalProperties: true },
     storyboard_panels: { type: 'array', items: { type: 'object', additionalProperties: true } },
   }),
-  promptSummary: 'Storyboard is planning-only: setting refs, ordered shot plans, camera/blocking/lighting/performance planning, coverage, continuity, and optional panels. It does not reference content units.',
+  promptSummary: 'Storyboard is planning-only: its own order, transition boundaries, setting refs, ordered shot plans, camera/blocking/lighting/performance planning, coverage, continuity, and optional panels. It does not reference content units.',
   examples: [{
     title: 'main',
     content: {
@@ -322,29 +311,84 @@ export const storyboardEntitySchema = {
       kind: 'storyboard',
       id: 'main',
       title: 'Rain call storyboard',
-        setting_refs: [{ setting_id: 'hero', setting_state_id: 'rain_panic', role: 'subject' }],
+      order: 1,
+      timeline: { caption: 'Phone glow returns.', gap_after_sec: 0.4 },
+      transition: { out: 'hold_then_cut' },
+      setting_refs: [{ setting_id: 'hero', setting_state_id: 'rain_panic', role: 'subject' }],
       shot_plans: [{ id: 'shot_plan_1', order: 1, shot_size: 'close_up', camera: { movement: 'slow_push_in' } }],
     },
   }],
 } satisfies SemanticEntitySchemaDefinition
 
-export const writingExpressionEntitySchema = {
-  id: 'movscript.writing_expression.v1',
-  entityKind: 'writing_expression',
-  title: 'Writing Expression',
+export const audioCueEntitySchema = {
+  id: 'movscript.audio_cue.v1',
+  entityKind: 'audio_cue',
+  title: 'Audio Cue',
   version: '1.0.0',
   status: 'active',
-  jsonSchema: entitySchema('writing_expression', ['expression_kind', 'text'], {
+  jsonSchema: entitySchema('audio_cue', ['cue_kind', 'title'], {
+    cue_kind: { enum: ['sound_effect', 'music', 'ambience', 'dialogue', 'foley', 'other'] },
+    scope_ref: sourceRefSchema,
+    storyboard_ref: sourceRefSchema,
+    shot_plan_id: { type: 'string' },
+    timing: objectSchema([], {
+      start: { type: 'string' },
+      end: { type: 'string' },
+      offset_sec: { type: 'number' },
+      duration_sec: { type: 'number' },
+    }),
+    prompt_hint: { type: 'string' },
+    asset_refs: { type: 'array', items: sourceRefSchema },
+  }),
+  promptSummary: 'Audio cue is an independent planning object for sound effects, music, ambience, dialogue cues, or foley. It can attach to a scene moment, storyboard, or shot plan through refs.',
+  examples: [{
+    title: 'phone_vibration',
+    content: {
+      schema: 'movscript.audio_cue.v1',
+      kind: 'audio_cue',
+      id: 'phone_vibration',
+      title: 'Phone vibration',
+      cue_kind: 'sound_effect',
+      scope_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      timing: { start: 'after_action', duration_sec: 1.2 },
+      prompt_hint: 'Low, sharp phone vibration under rain ambience.',
+    },
+  }],
+} satisfies SemanticEntitySchemaDefinition
+
+export const expressionUnitEntitySchema = {
+  id: 'movscript.expression_unit.v1',
+  entityKind: 'expression_unit',
+  title: 'Expression Unit',
+  version: '1.0.0',
+  status: 'active',
+  jsonSchema: entitySchema('expression_unit', ['expression_kind', 'text'], {
     expression_kind: { enum: ['dialogue', 'narration', 'subtitle', 'caption', 'action', 'visual_note'] },
     speaker: { type: 'string' },
     text: { type: 'string', minLength: 1 },
     intent: { type: 'string' },
-    target_ref: { type: 'string' },
+    span: objectSchema([], {
+      storyboard_refs: { type: 'array', items: sourceRefSchema },
+      from_storyboard_id: { type: 'string' },
+      to_storyboard_id: { type: 'string' },
+      start: { type: 'string' },
+      end: { type: 'string' },
+    }),
+    script_block_id: sourceRefSchema,
   }),
-  promptSummary: 'Writing expression is a storyboard-level text expression. It is independent from shot_plans order.',
+  promptSummary: 'Expression unit is a scene-moment-owned semantic expression. It can span multiple storyboards without belonging to one storyboard.',
   examples: [{
-    title: 'caption',
-    content: { schema: 'movscript.writing_expression.v1', kind: 'writing_expression', id: 'caption_1', expression_kind: 'caption', text: 'Unknown number lights up again.' },
+    title: 'dialogue_span',
+    content: {
+      schema: 'movscript.expression_unit.v1',
+      kind: 'expression_unit',
+      id: 'line_001',
+      expression_kind: 'dialogue',
+      speaker: 'hero',
+      text: 'You finally came.',
+      span: { from_storyboard_id: 'shot_01', to_storyboard_id: 'shot_03' },
+    },
   }],
 } satisfies SemanticEntitySchemaDefinition
 
@@ -354,33 +398,46 @@ export const contentUnitEntitySchema = {
   title: 'Content Unit',
   version: '1.0.0',
   status: 'active',
-  jsonSchema: entitySchema('content_unit', ['unit_kind', 'title', 'source_context'], {
-    unit_kind: { enum: ['shot', 'voiceover', 'dialogue_audio', 'sound', 'music_beat', 'subtitle', 'caption_card', 'transition'] },
-    source_context: strictObjectSchema(['scene_moment_ref', 'storyboard_ref'], {
-      scene_moment_ref: sourceRefSchema,
-      storyboard_ref: sourceRefSchema,
-    }),
-    editable_prompt: objectSchema([], {
-      prompt: { type: 'string' },
-      negative_prompt: { type: 'string' },
+  jsonSchema: entitySchema('content_unit', ['content_unit_type', 'output_kind', 'title'], {
+    content_unit_type: { enum: ['asset_ref', 'storyboard_video'] },
+    output_kind: { enum: ['image', 'video', 'audio', 'text', 'metadata'] },
+    scene_moment_ref: sourceRefSchema,
+    storyboard_ref: sourceRefSchema,
+    keyframe_ref: sourceRefSchema,
+    keyframe_refs: { type: 'array', items: sourceRefSchema },
+    audio_cue_ref: sourceRefSchema,
+    audio_cue_refs: { type: 'array', items: sourceRefSchema },
+    expression_unit_refs: { type: 'array', items: sourceRefSchema },
+    asset_ref: sourceRefSchema,
+    edit_prompt: objectSchema([], {
+      text: { type: 'string' },
+      negative_text: { type: 'string' },
       notes: { type: 'string' },
+      structured: { type: 'object', additionalProperties: true },
     }),
-    generation_constraints: { type: 'object', additionalProperties: true },
+    model_intent: objectSchema([], {
+      capability: { type: 'string' },
+      provider: { type: 'string' },
+      model: { type: 'string' },
+      quality: { type: 'string' },
+      duration_sec: { type: 'number' },
+      aspect_ratio: { type: 'string' },
+      params: { type: 'object', additionalProperties: true },
+    }),
   }),
-  promptSummary: 'Content unit is a project-level stable production unit. It references scene moment/storyboard and owns editable source prompt and generation constraints. Runtime candidates and production decisions are stored outside content_unit.json.',
+  promptSummary: 'Content unit is a project-level stable production task. It declares content_unit_type, output_kind, flat business refs, optional edit_prompt, and model_intent. Runtime candidates and selections are stored outside content_unit.json.',
   examples: [{
-    title: 'shot',
+    title: 'storyboard_video',
     content: {
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
-      id: 'k41m',
-      unit_kind: 'shot',
+      id: 'cu_storyboard_video',
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
       title: 'Hero watches the vibrating phone',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
-      },
-      editable_prompt: { prompt: 'Cold phone light on frightened face.' },
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      edit_prompt: { text: 'Cold phone light on frightened face.' },
     },
   }],
 } satisfies SemanticEntitySchemaDefinition
@@ -392,10 +449,17 @@ export const keyframeEntitySchema = {
   version: '1.0.0',
   status: 'active',
   jsonSchema: entitySchema('keyframe', [], {
+    scene_moment_ref: sourceRefSchema,
+    storyboard_ref: sourceRefSchema,
+    role: { type: 'string' },
     visual_intent: { type: 'string' },
+    timing: { type: 'object', additionalProperties: true },
+    composition: { type: 'object', additionalProperties: true },
+    continuity: { type: 'object', additionalProperties: true },
     reference_asset_refs: { type: 'array', items: sourceRefSchema },
+    reference_keyframe_refs: { type: 'array', items: sourceRefSchema },
   }),
-  promptSummary: 'Keyframe is a visual anchor. Scene-level, content-unit-level, and future shot-level keyframes use the same source schema. Runtime candidates and production decisions are stored outside keyframe.json.',
+  promptSummary: 'Keyframe is a visual semantic input for prompt engineering. It describes timing, composition, continuity, visual intent, and reference assets. Runtime candidates and production decisions are stored outside keyframe.json.',
   examples: [{
     title: 'anchor',
     content: {
@@ -421,7 +485,8 @@ export const SEMANTIC_ENTITY_SCHEMA_REGISTRY = {
   [segmentEntitySchema.id]: segmentEntitySchema,
   [sceneMomentEntitySchema.id]: sceneMomentEntitySchema,
   [storyboardEntitySchema.id]: storyboardEntitySchema,
-  [writingExpressionEntitySchema.id]: writingExpressionEntitySchema,
+  [audioCueEntitySchema.id]: audioCueEntitySchema,
+  [expressionUnitEntitySchema.id]: expressionUnitEntitySchema,
   [contentUnitEntitySchema.id]: contentUnitEntitySchema,
   [keyframeEntitySchema.id]: keyframeEntitySchema,
 } as const satisfies Record<string, SemanticEntitySchemaDefinition>
@@ -442,7 +507,8 @@ export const WORKSPACE_KIND_VALUES = [
   'segment_workspace',
   'scene_moment_workspace',
   'storyboard_workspace',
-  'writing_expression_workspace',
+  'audio_cue_workspace',
+  'expression_unit_workspace',
   'content_unit_workspace',
   'keyframe_workspace',
 ] as const satisfies readonly WorkspaceKind[]
@@ -460,7 +526,8 @@ export const SEMANTIC_ENTITY_KIND_VALUES = [
   'segment',
   'scene_moment',
   'storyboard',
-  'writing_expression',
+  'audio_cue',
+  'expression_unit',
   'content_unit',
   'keyframe',
 ] as const satisfies readonly SemanticEntityKind[]

@@ -7,14 +7,11 @@ import type { MovScriptWorkspaceFileRepository } from './types.js'
 export interface MovScriptContentUnitWriteInput {
   fileRepository: MovScriptWorkspaceFileRepository
   unit: Record<string, unknown>
-  keyframes?: Array<Record<string, unknown>>
 }
 
 export interface MovScriptContentUnitWriteResult {
   contentUnitPath: string
-  keyframePaths: string[]
   record: Record<string, unknown>
-  keyframes: Array<Record<string, unknown>>
 }
 
 export async function upsertMovScriptContentUnit(
@@ -26,19 +23,7 @@ export async function upsertMovScriptContentUnit(
   const record = normalizeContentUnitRecord(input.unit, current, contentUnitId)
   await writeRecord(input.fileRepository, contentUnitPath, record)
 
-  const keyframePaths: string[] = []
-  const normalizedKeyframes: Array<Record<string, unknown>> = []
-  for (const keyframe of input.keyframes ?? []) {
-    const keyframeId = stableEntityId(keyframe.ID ?? keyframe.id ?? keyframe.client_id, 'keyframe')
-    const keyframePath = `${contentUnitDirectory(contentUnitId)}/keyframes/${entityPathSlug(keyframeId, 'keyframe')}/keyframe.json`
-    const currentKeyframe = await readOptionalRecord(input.fileRepository, keyframePath)
-    const keyframeRecord = normalizeKeyframeRecord(keyframe, currentKeyframe, keyframeId, contentUnitPath)
-    await writeRecord(input.fileRepository, keyframePath, keyframeRecord)
-    keyframePaths.push(keyframePath)
-    normalizedKeyframes.push(keyframeRecord)
-  }
-
-  return { contentUnitPath, keyframePaths, record, keyframes: normalizedKeyframes }
+  return { contentUnitPath, record }
 }
 
 export function movScriptContentUnitPath(unit: Record<string, unknown>): string {
@@ -65,68 +50,36 @@ function normalizeContentUnitRecord(
   current: Record<string, unknown>,
   id: string,
 ): Record<string, unknown> {
-  const metadata = parseMetadata(unit.metadata_json ?? current.metadata_json)
   const productionId = ref(unit.production_id ?? current.production_id, 'production')
   const segmentId = ref(unit.segment_id ?? current.segment_id, 'segment')
   const sceneMomentId = ref(unit.scene_moment_id ?? current.scene_moment_id, 'scene_moment')
   const storyboardId = ref(unit.storyboard_id ?? current.storyboard_id ?? 'main', 'storyboard')
-  const sourceContext = sceneMomentId
-    ? {
-        scene_moment_ref: sceneMomentRef(productionId, segmentId, sceneMomentId),
-        storyboard_ref: storyboardRef(productionId, segmentId, sceneMomentId, storyboardId),
-      }
-    : current.source_context
+  const contentUnitType = stringValue(unit.content_unit_type ?? unit.contentUnitType ?? current.content_unit_type)
+    ?? 'storyboard_video'
+  const outputKind = stringValue(unit.output_kind ?? unit.outputKind ?? current.output_kind)
+    ?? (contentUnitType === 'asset_ref' ? 'image' : 'video')
 
   return pruneUndefined({
     ...stripWorkspacePrivateFields(current),
     schema: 'movscript.content_unit.v1',
     kind: 'content_unit',
     id,
-    production_id: productionId,
-    segment_id: segmentId,
-    scene_moment_id: sceneMomentId,
     title: stringValue(unit.title ?? current.title) ?? 'Untitled content unit',
-    unit_kind: normalizeUnitKind(unit.kind ?? unit.unit_kind ?? current.unit_kind),
+    content_unit_type: contentUnitType,
+    output_kind: outputKind,
     order: finiteNumber(unit.order) ?? finiteNumber(current.order),
-    duration_sec: positiveNumberOrNull(unit.duration_sec ?? current.duration_sec),
     description: stringValue(unit.description ?? current.description) ?? '',
-    source_context: sourceContext,
-    editable_prompt: pruneUndefined({
-      ...(isRecord(current.editable_prompt) ? current.editable_prompt : {}),
-      prompt: stringValue(unit.prompt ?? current.prompt),
-    }),
-    shot: pruneUndefined({
-      ...(isRecord(current.shot) ? current.shot : {}),
-      shot_size: stringValue(unit.shot_size),
-      camera_angle: stringValue(unit.camera_angle),
-      camera_motion: stringValue(unit.camera_motion),
-    }),
-    visual_taskGraph: isRecord(metadata.visual_taskGraph) ? metadata.visual_taskGraph : undefined,
-    storyboard_brief: isRecord(metadata.storyboard_brief) ? metadata.storyboard_brief : undefined,
-    timing: isRecord(metadata.timing) ? metadata.timing : undefined,
+    scene_moment_ref: stringValue(unit.scene_moment_ref ?? unit.sceneMomentRef ?? current.scene_moment_ref)
+      ?? (sceneMomentId ? sceneMomentRef(productionId, segmentId, sceneMomentId) : undefined),
+    storyboard_ref: stringValue(unit.storyboard_ref ?? unit.storyboardRef ?? current.storyboard_ref)
+      ?? (sceneMomentId ? storyboardRef(productionId, segmentId, sceneMomentId, storyboardId) : undefined),
+    asset_ref: stringValue(unit.asset_ref ?? unit.assetRef ?? current.asset_ref),
+    keyframe_refs: arrayField(unit.keyframe_refs ?? unit.keyframeRefs ?? current.keyframe_refs),
+    audio_cue_refs: arrayField(unit.audio_cue_refs ?? unit.audioCueRefs ?? current.audio_cue_refs),
+    expression_unit_refs: arrayField(unit.expression_unit_refs ?? unit.expressionUnitRefs ?? current.expression_unit_refs),
+    edit_prompt: normalizeEditPrompt(unit.edit_prompt ?? unit.editPrompt ?? unit.prompt ?? current.edit_prompt),
+    model_intent: isRecord(unit.model_intent ?? unit.modelIntent) ? unit.model_intent ?? unit.modelIntent : current.model_intent,
     ...(unit.__delete === true ? { __delete: true } : {}),
-  })
-}
-
-function normalizeKeyframeRecord(
-  keyframe: Record<string, unknown>,
-  current: Record<string, unknown>,
-  id: string,
-  contentUnitPath: string,
-): Record<string, unknown> {
-  const metadata = parseMetadata(keyframe.metadata_json ?? current.metadata_json)
-  return pruneUndefined({
-    ...stripWorkspacePrivateFields(current),
-    schema: 'movscript.keyframe.v1',
-    kind: 'keyframe',
-    id,
-    title: stringValue(keyframe.title ?? current.title) ?? 'Keyframe',
-    description: stringValue(keyframe.description ?? current.description) ?? '',
-    prompt: stringValue(keyframe.prompt ?? current.prompt) ?? '',
-    order: finiteNumber(keyframe.order) ?? finiteNumber(current.order),
-    content_unit_ref: contentUnitPath,
-    frame_role: stringValue(metadata.frame_role),
-    ...(keyframe.__delete === true ? { __delete: true } : {}),
   })
 }
 
@@ -163,23 +116,6 @@ function stableEntityId(value: unknown, prefix: string): string {
 function ref(value: unknown, prefix: string): string | undefined {
   if (value === undefined || value === null || String(value).trim() === '') return undefined
   return stableEntityId(value, prefix)
-}
-
-function normalizeUnitKind(value: unknown): string {
-  const kind = stringValue(value)
-  if (kind === 'shot' || kind === 'voiceover' || kind === 'dialogue_audio' || kind === 'sound' || kind === 'music_beat' || kind === 'subtitle' || kind === 'caption_card' || kind === 'transition') return kind
-  return 'shot'
-}
-
-function parseMetadata(value: unknown): Record<string, unknown> {
-  if (isRecord(value)) return value
-  if (typeof value !== 'string' || !value.trim()) return {}
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
 }
 
 async function readOptionalRecord(fileRepository: MovScriptWorkspaceFileRepository, path: string): Promise<Record<string, unknown>> {
@@ -219,6 +155,16 @@ function positiveNumberOrNull(value: unknown): number | null | undefined {
   if (value === null) return null
   const next = Number(value)
   return Number.isFinite(next) && next > 0 ? next : undefined
+}
+
+function arrayField(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined
+}
+
+function normalizeEditPrompt(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === 'string') return { text: value }
+  if (isRecord(value)) return value
+  return undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

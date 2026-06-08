@@ -4,10 +4,26 @@
   "description": "MovScript Lang command line interface.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChiaoTeo/movscript-lang.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/ChiaoTeo/movscript-lang#readme",
+  "bugs": {
+    "url": "https://github.com/ChiaoTeo/movscript-lang/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "movscript-lang": "./dist/index.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

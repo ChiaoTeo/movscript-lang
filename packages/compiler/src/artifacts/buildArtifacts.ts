@@ -5,9 +5,8 @@ import type {
 import { sameEntityRef } from '@movscript/workspace/layout'
 import type { SemanticEntityKind } from '@movscript/language/domain'
 import {
-  compileContentGenerationPromptBundle,
-  prepareContentProductionContext,
-  type ContentGenerationPromptBundle,
+  buildContentUnitArtifacts,
+  type ContentUnitBuildArtifactBundle,
 } from './contentProduction.js'
 
 export type MovScriptDomainRelationType = 'owns' | 'contains' | 'references' | 'uses' | 'derives'
@@ -75,14 +74,15 @@ export interface MovScriptImpactReportArtifact {
 
 export interface MovScriptPreviewTimelineItem {
   id: string
-  itemType: 'segment' | 'scene_moment' | 'storyboard' | 'content_unit'
+  itemType: 'segment' | 'scene_moment' | 'storyboard' | 'audio_cue' | 'content_unit'
   entity: MovScriptDomainEntityRef
   order: number
   parentId?: string
   title?: string
   caption?: string
   gapAfterSec?: number
-  audio?: Record<string, unknown>
+  cueKind?: string
+  timing?: Record<string, unknown>
   transition?: Record<string, unknown>
   contentUnitIds?: Array<string | number>
 }
@@ -92,11 +92,6 @@ export interface MovScriptPreviewTimelineArtifact {
   productionId: string | number
   productionPath: string
   items: MovScriptPreviewTimelineItem[]
-}
-
-export interface MovScriptContentGenerationPromptArtifact extends ContentGenerationPromptBundle {
-  schema: 'movscript.compiled_generation_prompt.v1'
-  contentUnitPath: string
 }
 
 export interface MovScriptWorkspaceArtifactsInput {
@@ -117,7 +112,7 @@ export interface MovScriptWorkspaceBuildArtifacts {
   assetIndex: MovScriptAssetIndexArtifact
   impactReport: MovScriptImpactReportArtifact
   previewTimelines: MovScriptPreviewTimelineArtifact[]
-  contentGenerationPrompts: MovScriptContentGenerationPromptArtifact[]
+  contentUnitArtifacts: ContentUnitBuildArtifactBundle[]
 }
 
 export function buildMovScriptWorkspaceBuildArtifacts(input: MovScriptWorkspaceArtifactsInput): MovScriptWorkspaceBuildArtifacts {
@@ -128,7 +123,7 @@ export function buildMovScriptWorkspaceBuildArtifacts(input: MovScriptWorkspaceA
     assetIndex: buildAssetIndex(input.index),
     impactReport: buildImpactReport(input.changedEntities, input.buildId, input.createdAt, input.index, relationGraph),
     previewTimelines: buildPreviewTimelines(input.index),
-    contentGenerationPrompts: buildContentGenerationPrompts(input.index),
+    contentUnitArtifacts: buildContentUnitArtifacts(input.index, { createdAt: input.createdAt }),
   }
 }
 
@@ -166,11 +161,29 @@ export function buildRelationGraph(index: MovScriptWorkspaceDomainIndex): MovScr
     }
 
     if (entity.entityKind === 'content_unit') {
-      const sourceContext = recordField(entity.record.source_context)
-      const sceneMoment = entityByPathDir.get(normalizedRefDir(sourceContext?.scene_moment_ref))
-      const storyboard = entityByPathDir.get(normalizedRefDir(sourceContext?.storyboard_ref))
-      if (sceneMoment) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(sceneMoment), field: 'source_context.scene_moment_ref' })
-      if (storyboard) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(storyboard), field: 'source_context.storyboard_ref' })
+      const sceneMoment = entityByPathDir.get(normalizedRefDir(entity.record.scene_moment_ref))
+      const storyboard = entityByPathDir.get(normalizedRefDir(entity.record.storyboard_ref))
+      const audioCue = entityByPathDir.get(normalizedRefDir(entity.record.audio_cue_ref))
+      const asset = findEntityByRef(entities, 'asset', entity.record.asset_ref) ?? entityByPathDir.get(normalizedRefDir(entity.record.asset_ref))
+      if (sceneMoment) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(sceneMoment), field: 'scene_moment_ref' })
+      if (storyboard) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(storyboard), field: 'storyboard_ref' })
+      if (audioCue) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(audioCue), field: 'audio_cue_ref' })
+      if (asset) relations.push({ type: 'uses', from: entityRef(entity), to: entityRef(asset), field: 'asset_ref' })
+      for (const keyframeRef of arrayField(entity.record.keyframe_refs)) {
+        const keyframe = findEntityByRef(entities, 'keyframe', keyframeRef) ?? entityByPathDir.get(normalizedRefDir(keyframeRef))
+        if (keyframe) relations.push({ type: 'uses', from: entityRef(entity), to: entityRef(keyframe), field: 'keyframe_refs' })
+      }
+    }
+
+    if (entity.entityKind === 'audio_cue') {
+      const scope = entityByPathDir.get(normalizedRefDir(entity.record.scope_ref))
+      const storyboard = entityByPathDir.get(normalizedRefDir(entity.record.storyboard_ref))
+      if (scope) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(scope), field: 'scope_ref' })
+      if (storyboard) relations.push({ type: 'references', from: entityRef(entity), to: entityRef(storyboard), field: 'storyboard_ref' })
+      for (const assetRef of arrayField(entity.record.asset_refs)) {
+        const asset = findEntityByRef(entities, 'asset', assetRef) ?? entityByPathDir.get(normalizedRefDir(assetRef))
+        if (asset) relations.push({ type: 'uses', from: entityRef(entity), to: entityRef(asset), field: 'asset_refs' })
+      }
     }
 
     if (entity.entityKind === 'storyboard') {
@@ -235,7 +248,6 @@ export function buildImpactReport(
 
 export function buildPreviewTimelines(index: MovScriptWorkspaceDomainIndex): MovScriptPreviewTimelineArtifact[] {
   const sourceEntities = canonicalEntities(index)
-  const entitiesByDir = new Map(sourceEntities.map((entity) => [entityDir(entity.path), entity]))
   const contentUnitsByStoryboardRef = groupContentUnitsByStoryboardRef(index)
   return sourceEntities
     .filter(isProductionWithId)
@@ -246,25 +258,38 @@ export function buildPreviewTimelines(index: MovScriptWorkspaceDomainIndex): Mov
       let order = 0
       for (const segment of sortEntities(segments)) {
         const segmentItemId = timelineItemId(segment)
-        items.push(timelineItem(segmentItemId, 'segment', segment, order++))
+        items.push({
+          ...timelineItem(segmentItemId, 'segment', segment, order++),
+          transition: recordField(segment.record.transition),
+        })
         const sceneMoments = childEntities(index, entityDir(segment.path), 'scene_moment')
         for (const sceneMoment of sortEntities(sceneMoments)) {
           const sceneMomentItemId = timelineItemId(sceneMoment)
-          const storyboardTiming = recordField(sceneMoment.record.storyboard_timing)
           items.push({
             ...timelineItem(sceneMomentItemId, 'scene_moment', sceneMoment, order++),
             parentId: segmentItemId,
-            audio: recordField(storyboardTiming?.audio),
-            transition: recordField(storyboardTiming?.transition),
+            transition: recordField(sceneMoment.record.transition),
           })
-          for (const { storyboard, timingItem } of orderedStoryboardsForSceneMoment(index, sceneMoment, storyboardTiming, entitiesByDir)) {
+          const audioCues = childEntities(index, entityDir(sceneMoment.path), 'audio_cue')
+          for (const audioCue of sortEntities(audioCues)) {
+            items.push({
+              ...timelineItem(timelineItemId(audioCue), 'audio_cue', audioCue, order++),
+              parentId: sceneMomentItemId,
+              cueKind: stringField(audioCue.record.cue_kind),
+              timing: recordField(audioCue.record.timing),
+            })
+          }
+          for (const storyboard of orderedStoryboardsForSceneMoment(index, sceneMoment)) {
             const storyboardItemId = timelineItemId(storyboard)
             const contentUnits = contentUnitsByStoryboardRef.get(entityDir(storyboard.path)) ?? []
+            const timeline = recordField(storyboard.record.timeline)
             items.push({
               ...timelineItem(storyboardItemId, 'storyboard', storyboard, order++),
               parentId: sceneMomentItemId,
-              caption: stringField(timingItem?.caption),
-              gapAfterSec: numberField(timingItem?.gap_after_sec),
+              caption: stringField(timeline?.caption),
+              gapAfterSec: numberField(timeline?.gap_after_sec),
+              timing: timeline,
+              transition: recordField(storyboard.record.transition),
               contentUnitIds: contentUnits.map((contentUnit) => contentUnit.id).filter(isDefined),
             })
             for (const contentUnit of sortEntities(contentUnits)) {
@@ -281,19 +306,6 @@ export function buildPreviewTimelines(index: MovScriptWorkspaceDomainIndex): Mov
         productionId: production.id,
         productionPath: productionDir,
         items,
-      }
-    })
-}
-
-export function buildContentGenerationPrompts(index: MovScriptWorkspaceDomainIndex): MovScriptContentGenerationPromptArtifact[] {
-  return canonicalEntities(index)
-    .filter((entity) => entity.entityKind === 'content_unit' && entity.id !== undefined)
-    .map((contentUnit) => {
-      const bundle = compileContentGenerationPromptBundle(prepareContentProductionContext(index, contentUnit.id as string | number))
-      return {
-        schema: 'movscript.compiled_generation_prompt.v1',
-        contentUnitPath: contentUnit.path,
-        ...bundle,
       }
     })
 }
@@ -386,7 +398,8 @@ function editorImpactsForChangedEntity(
     case 'segment':
     case 'scene_moment':
     case 'storyboard':
-    case 'writing_expression':
+    case 'audio_cue':
+    case 'expression_unit':
       return [
         'Production planning tree should be refreshed.',
         'Preview timeline may need recompilation.',
@@ -457,7 +470,8 @@ function isRelevantDependencyRelation(
   if (relation.type === 'owns') return changedRef.entityKind === 'asset'
   if (relation.type === 'contains') {
     return changedRef.entityKind === 'keyframe'
-      || changedRef.entityKind === 'writing_expression'
+      || changedRef.entityKind === 'expression_unit'
+      || changedRef.entityKind === 'audio_cue'
       || changedRef.entityKind === 'storyboard'
       || changedRef.entityKind === 'scene_moment'
   }
@@ -511,41 +525,26 @@ function collectionDirForEntityKind(entityKind: SemanticEntityKind): string | un
   if (entityKind === 'segment') return 'segments'
   if (entityKind === 'scene_moment') return 'scene_moments'
   if (entityKind === 'storyboard') return 'storyboards'
+  if (entityKind === 'audio_cue') return 'audio_cues'
+  if (entityKind === 'expression_unit') return 'expression_units'
   return undefined
 }
 
 function orderedStoryboardsForSceneMoment(
   index: MovScriptWorkspaceDomainIndex,
   sceneMoment: MovScriptWorkspaceIndexedEntity,
-  storyboardTiming: Record<string, unknown> | undefined,
-  entitiesByDir: Map<string, MovScriptWorkspaceIndexedEntity>,
-): Array<{ storyboard: MovScriptWorkspaceIndexedEntity; timingItem?: Record<string, unknown> }> {
-  const timingItems = arrayField(storyboardTiming?.items).filter(isRecord)
-  const storyboardsFromTiming: Array<{ storyboard: MovScriptWorkspaceIndexedEntity; timingItem: Record<string, unknown>; order?: number }> = []
-  for (const item of timingItems) {
-    const storyboardId = stringField(item.storyboard_id)
-    const storyboard = storyboardId
-      ? entitiesByDir.get(`${entityDir(sceneMoment.path)}/storyboards/${storyboardId}`)
-      : undefined
-    if (storyboard) storyboardsFromTiming.push({ storyboard, timingItem: item, order: numberField(item.order) })
-  }
-  if (storyboardsFromTiming.length > 0) {
-    return storyboardsFromTiming
-      .sort((left, right) => (left.order ?? Number.MAX_SAFE_INTEGER) - (right.order ?? Number.MAX_SAFE_INTEGER))
-      .map(({ storyboard, timingItem }) => ({ storyboard, timingItem }))
-  }
+): MovScriptWorkspaceIndexedEntity[] {
   return sortEntities(canonicalEntities(index).filter((entity) => {
     return entity.entityKind === 'storyboard'
       && entity.path.startsWith(`${entityDir(sceneMoment.path)}/storyboards/`)
-  })).map((storyboard) => ({ storyboard }))
+  }))
 }
 
 function groupContentUnitsByStoryboardRef(index: MovScriptWorkspaceDomainIndex): Map<string, MovScriptWorkspaceIndexedEntity[]> {
   const out = new Map<string, MovScriptWorkspaceIndexedEntity[]>()
   for (const entity of canonicalEntities(index)) {
     if (entity.entityKind !== 'content_unit') continue
-    const sourceContext = recordField(entity.record.source_context)
-    const storyboardRef = normalizedRefDir(sourceContext?.storyboard_ref)
+    const storyboardRef = normalizedRefDir(entity.record.storyboard_ref)
     if (!storyboardRef) continue
     out.set(storyboardRef, [...(out.get(storyboardRef) ?? []), entity])
   }

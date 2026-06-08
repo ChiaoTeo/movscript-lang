@@ -4,7 +4,23 @@
   "description": "MovScript workspace facade for layout, stores, repositories, node adapters, and workspace services.",
   "license": "MIT",
   "type": "module",
-  "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChiaoTeo/movscript-lang.git",
+    "directory": "packages/workspace"
+  },
+  "homepage": "https://github.com/ChiaoTeo/movscript-lang#readme",
+  "bugs": {
+    "url": "https://github.com/ChiaoTeo/movscript-lang/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

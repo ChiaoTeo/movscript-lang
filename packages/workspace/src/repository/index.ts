@@ -28,10 +28,10 @@ export {
 } from './inlineCandidates.js'
 
 export {
-  updateMovScriptContentUnitEditablePrompt,
-  type MovScriptContentUnitEditablePrompt,
-  type MovScriptContentUnitEditablePromptUpdateInput,
-  type MovScriptContentUnitEditablePromptUpdateResult,
+  updateMovScriptContentUnitEditPrompt,
+  type MovScriptContentUnitEditPrompt,
+  type MovScriptContentUnitEditPromptUpdateInput,
+  type MovScriptContentUnitEditPromptUpdateResult,
 } from './contentUnitPrompt.js'
 
 export {
@@ -41,15 +41,17 @@ export {
 } from './scriptSnapshots.js'
 
 export {
-  updateMovScriptSceneMomentStoryboardTiming,
+  updateMovScriptEntityTransition,
+  updateMovScriptStoryboardTimeline,
   updateMovScriptStoryboardShotPlans,
+  type MovScriptEntityTransitionUpdateInput,
+  type MovScriptEntityTransitionUpdateResult,
   type MovScriptShotPlanUpdateInput,
   type MovScriptShotPlanUpdateResult,
-  type MovScriptStoryboardTimingAudio,
-  type MovScriptStoryboardTimingItem,
-  type MovScriptStoryboardTimingTransition,
-  type MovScriptStoryboardTimingUpdateInput,
-  type MovScriptStoryboardTimingUpdateResult,
+  type MovScriptStoryboardTimeline,
+  type MovScriptStoryboardTimelineUpdateInput,
+  type MovScriptStoryboardTimelineUpdateResult,
+  type MovScriptTransitionBoundary,
 } from './planning.js'
 
 export {
@@ -83,6 +85,8 @@ export {
 export {
   movScriptProductionWorkspacePath,
   saveMovScriptProductionWorkspaceSnapshot,
+  type MovScriptProductionWorkspaceAudioCueNode,
+  type MovScriptProductionWorkspaceExpressionUnitNode,
   type MovScriptProductionWorkspaceSceneMomentNode,
   type MovScriptProductionWorkspaceSegmentNode,
   type MovScriptProductionWorkspaceSettingRefNode,
@@ -91,7 +95,6 @@ export {
   type MovScriptProductionWorkspaceSnapshotWriteInput,
   type MovScriptProductionWorkspaceSnapshotWriteResult,
   type MovScriptProductionWorkspaceStoryboardNode,
-  type MovScriptProductionWorkspaceWritingExpressionNode,
 } from './production.js'
 
 export {
@@ -102,6 +105,17 @@ export {
   type MovScriptContentUnitWriteInput,
   type MovScriptContentUnitWriteResult,
 } from './contentUnits.js'
+
+export {
+  clearMovScriptContentUnitSelection,
+  createMovScriptContentCandidate,
+  selectMovScriptContentUnitCandidate,
+  type MovScriptContentCandidateOutput,
+  type MovScriptContentCandidateWriteInput,
+  type MovScriptContentCandidateWriteResult,
+  type MovScriptContentUnitSelectionInput,
+  type MovScriptContentUnitSelectionResult,
+} from './contentCandidates.js'
 
 export {
   upsertMovScriptProjectStandards,

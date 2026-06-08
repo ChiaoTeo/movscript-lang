@@ -21,6 +21,8 @@ export function classifyMovScriptWorkspacePath(path: string): MovScriptWorkspace
 export function isMovScriptSourcePath(path: string): boolean {
   const normalized = normalizeWorkspacePath(path)
   if (MOVSCRIPT_SOURCE_ROOT_FILES.has(normalized)) return true
+  if (/^content_units\/[^/]+\/selection\.json$/.test(normalized)) return true
+  if (/^content_units\/[^/]+\/candidates\/[^/]+\/content_candidate\.json$/.test(normalized)) return true
   const [first] = normalized.split('/')
   const fileName = normalized.split('/').pop()
   return first !== undefined
@@ -73,5 +75,6 @@ export const MOVSCRIPT_SOURCE_ENTITY_FILES = new Set([
   'segment.json',
   'scene_moment.json',
   'storyboard.json',
-  'writing_expression.json',
+  'audio_cue.json',
+  'expression_unit.json',
 ])

@@ -32,7 +32,8 @@ export interface MovScriptWorkspaceRootPaths {
 
 export interface MovScriptWorkspaceRootManifest {
   schema: typeof MOVSCRIPT_WORKSPACE_MANIFEST_SCHEMA
-  projectName: string
+  project_id: string
+  title: string
   createdAt: string
   updatedAt: string
   layout: {

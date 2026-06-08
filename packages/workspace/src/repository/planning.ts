@@ -1,33 +1,35 @@
 import type { MovScriptWorkspaceFileRepository } from './types.js'
 
-export interface MovScriptStoryboardTimingItem {
-  storyboard_id: string
-  order: number
-  gap_after_sec?: number
-  caption?: string
-}
-
-export interface MovScriptStoryboardTimingAudio {
-  note?: string
-  music?: string
-  sound_effects?: string[]
-}
-
-export interface MovScriptStoryboardTimingTransition {
+export interface MovScriptTransitionBoundary {
   in?: string
   out?: string
   notes?: string
 }
 
-export interface MovScriptStoryboardTimingUpdateInput {
+export interface MovScriptEntityTransitionUpdateInput {
   fileRepository: MovScriptWorkspaceFileRepository
   targetPath: string
-  items: MovScriptStoryboardTimingItem[]
-  audio?: MovScriptStoryboardTimingAudio
-  transition?: MovScriptStoryboardTimingTransition
+  transition?: MovScriptTransitionBoundary
 }
 
-export interface MovScriptStoryboardTimingUpdateResult {
+export interface MovScriptEntityTransitionUpdateResult {
+  path: string
+  record: Record<string, unknown>
+}
+
+export interface MovScriptStoryboardTimelineUpdateInput {
+  fileRepository: MovScriptWorkspaceFileRepository
+  targetPath: string
+  timeline?: MovScriptStoryboardTimeline
+}
+
+export interface MovScriptStoryboardTimeline {
+  gap_after_sec?: number
+  caption?: string
+  duration_sec?: number
+}
+
+export interface MovScriptStoryboardTimelineUpdateResult {
   path: string
   record: Record<string, unknown>
 }
@@ -43,20 +45,27 @@ export interface MovScriptShotPlanUpdateResult {
   record: Record<string, unknown>
 }
 
-export async function updateMovScriptSceneMomentStoryboardTiming(
-  input: MovScriptStoryboardTimingUpdateInput,
-): Promise<MovScriptStoryboardTimingUpdateResult> {
+export async function updateMovScriptEntityTransition(
+  input: MovScriptEntityTransitionUpdateInput,
+): Promise<MovScriptEntityTransitionUpdateResult> {
   const targetPath = normalizeWorkspacePath(input.targetPath)
-  const current = await readWorkspaceRecord(input.fileRepository, targetPath, 'scene_moment')
-  const items = input.items.map((item, index) => normalizeStoryboardTimingItem(item, index))
-  const storyboard_timing = pruneUndefined({
-    items,
-    audio: normalizeTimingAudio(input.audio),
-    transition: normalizeTimingTransition(input.transition),
-  })
+  const current = await readWorkspaceRecord(input.fileRepository, targetPath)
   const record = pruneUndefined({
     ...current,
-    storyboard_timing,
+    transition: normalizeTransition(input.transition),
+  })
+  await input.fileRepository.write({ path: targetPath, content: serializeWorkspaceRecord(record) })
+  return { path: targetPath, record }
+}
+
+export async function updateMovScriptStoryboardTimeline(
+  input: MovScriptStoryboardTimelineUpdateInput,
+): Promise<MovScriptStoryboardTimelineUpdateResult> {
+  const targetPath = normalizeWorkspacePath(input.targetPath)
+  const current = await readWorkspaceRecord(input.fileRepository, targetPath, 'storyboard')
+  const record = pruneUndefined({
+    ...current,
+    timeline: normalizeTimeline(input.timeline),
   })
   await input.fileRepository.write({ path: targetPath, content: serializeWorkspaceRecord(record) })
   return { path: targetPath, record }
@@ -79,7 +88,7 @@ export async function updateMovScriptStoryboardShotPlans(
 async function readWorkspaceRecord(
   fileRepository: MovScriptWorkspaceFileRepository,
   targetPath: string,
-  expectedKind: string,
+  expectedKind?: string,
 ): Promise<Record<string, unknown>> {
   const file = await fileRepository.read({ path: targetPath })
   const parsed = JSON.parse(file.content) as unknown
@@ -87,39 +96,27 @@ async function readWorkspaceRecord(
   const schemaKind = typeof parsed.schema === 'string'
     ? parsed.schema.replace(/^movscript\./, '').replace(/\.v\d+$/, '')
     : undefined
-  if (parsed.kind !== expectedKind && schemaKind !== expectedKind) {
+  if (expectedKind !== undefined && parsed.kind !== expectedKind && schemaKind !== expectedKind) {
     throw new Error(`target kind mismatch: expected ${expectedKind}`)
   }
   return parsed
 }
 
-function normalizeStoryboardTimingItem(item: MovScriptStoryboardTimingItem, index: number): Record<string, unknown> {
-  const storyboardId = stringValue(item.storyboard_id)
-  if (!storyboardId) throw new Error(`storyboard_timing.items[${index}].storyboard_id required`)
-  if (!Number.isFinite(item.order)) throw new Error(`storyboard_timing.items[${index}].order required`)
-  return pruneUndefined({
-    storyboard_id: storyboardId,
-    order: item.order,
-    gap_after_sec: finiteNumber(item.gap_after_sec),
-    caption: stringValue(item.caption),
-  })
-}
-
-function normalizeTimingAudio(audio: MovScriptStoryboardTimingAudio | undefined): Record<string, unknown> | undefined {
-  if (!audio) return undefined
-  return pruneUndefined({
-    note: stringValue(audio.note),
-    music: stringValue(audio.music),
-    sound_effects: Array.isArray(audio.sound_effects) ? audio.sound_effects.filter(isString) : undefined,
-  })
-}
-
-function normalizeTimingTransition(transition: MovScriptStoryboardTimingTransition | undefined): Record<string, unknown> | undefined {
+function normalizeTransition(transition: MovScriptTransitionBoundary | undefined): Record<string, unknown> | undefined {
   if (!transition) return undefined
   return pruneUndefined({
     in: stringValue(transition.in),
     out: stringValue(transition.out),
     notes: stringValue(transition.notes),
+  })
+}
+
+function normalizeTimeline(timeline: MovScriptStoryboardTimeline | undefined): Record<string, unknown> | undefined {
+  if (!timeline) return undefined
+  return pruneUndefined({
+    gap_after_sec: finiteNumber(timeline.gap_after_sec),
+    caption: stringValue(timeline.caption),
+    duration_sec: finiteNumber(timeline.duration_sec),
   })
 }
 

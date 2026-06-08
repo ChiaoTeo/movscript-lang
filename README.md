@@ -72,9 +72,15 @@ movscript-lang storyboard add --production p8f3 --segment a19d --scene-moment r7
   --id wide \
   --title "Wide angle plan" \
   --order 2
+movscript-lang audio-cue add --production p8f3 --segment a19d --scene-moment r72k \
+  --id phone_vibration \
+  --title "Phone vibration" \
+  --kind sound_effect \
+  --storyboard main \
+  --prompt "Low sharp phone vibration under rain ambience."
 ```
 
-Scene moments keep storyboards as an ordered `storyboard_timing.items` list. There is no active storyboard; every storyboard in the list is available for generation.
+Scene moments describe planning context and their own transition boundaries. Storyboards are child entities and keep their own `order`, `timeline`, and transition boundaries. Audio cues are independent child objects under a scene moment and can reference a storyboard.
 
 Create a content unit from a scene moment and storyboard:
 
@@ -87,7 +93,20 @@ movscript-lang content-unit add \
   --prompt "Cold phone light on frightened face."
 ```
 
-You can also pass ids with `--production`, `--segment`, `--scene-moment`, and `--storyboard` instead of full paths.
+Create an audio content unit from an audio cue:
+
+```sh
+movscript-lang content-unit add \
+  --id opening_sound \
+  --kind sound \
+  --title "Opening sound cue" \
+  --scene-moment productions/p8f3/segments/a19d/scene_moments/r72k \
+  --storyboard productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main \
+  --audio-cue productions/p8f3/segments/a19d/scene_moments/r72k/audio_cues/phone_vibration \
+  --prompt "Low sharp phone vibration under rain ambience."
+```
+
+You can also pass ids with `--production`, `--segment`, `--scene-moment`, `--storyboard`, and `--audio-cue` instead of full paths.
 
 Add an existing runtime resource to a target's candidate list without running a provider:
 

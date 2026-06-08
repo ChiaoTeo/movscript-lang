@@ -4,7 +4,23 @@
   "description": "MovScript AI film production language, source model, domain IR, and schemas.",
   "license": "MIT",
   "type": "module",
-  "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChiaoTeo/movscript-lang.git",
+    "directory": "packages/language"
+  },
+  "homepage": "https://github.com/ChiaoTeo/movscript-lang#readme",
+  "bugs": {
+    "url": "https://github.com/ChiaoTeo/movscript-lang/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,15 +1,15 @@
 export {
-  compileContentGenerationPromptBundle,
-  prepareContentProductionContext,
-  type ContentGenerationPromptBundle,
-  type ContentGenerationReferenceBundle,
-  type ContentGenerationReferenceResource,
-  type ContentProductionContext,
+  buildContentUnitArtifact,
+  buildContentUnitArtifacts,
+  type ContentUnitBuildArtifactBundle,
+  type ContentUnitDependencyReport,
+  type ContentUnitInputVersion,
+  type ContentUnitRuntimePanel,
+  type ContentUnitSelectionValidity,
 } from './contentProduction.js'
 
 export {
   buildAssetIndex,
-  buildContentGenerationPrompts,
   buildDomainTree,
   buildImpactReport,
   buildMovScriptWorkspaceBuildArtifacts,
@@ -17,7 +17,6 @@ export {
   buildRelationGraph,
   type MovScriptAssetIndexArtifact,
   type MovScriptAssetIndexEntry,
-  type MovScriptContentGenerationPromptArtifact,
   type MovScriptDomainEntityRef,
   type MovScriptDomainRelation,
   type MovScriptDomainRelationType,

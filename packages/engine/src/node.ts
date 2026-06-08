@@ -9,9 +9,8 @@ import {
   reviewMovScriptBuildWorkspace,
 } from '@movscript/compiler/node'
 import {
+  buildContentUnitArtifact,
   buildMovScriptWorkspaceBuildArtifacts,
-  compileContentGenerationPromptBundle,
-  prepareContentProductionContext,
 } from '@movscript/compiler/artifacts'
 import {
   createMovScriptEngine,
@@ -42,9 +41,12 @@ export function createNodeMovScriptEngine(input: NodeMovScriptEngineInput = {}):
       fileRepository,
       ...(input.now ? { now: input.now() } : {}),
     }),
-    async compileContentGenerationPrompt(contentUnitId) {
+    async buildContentUnitArtifact(contentUnitId) {
       const index = await workspaceService.loadIndex()
-      return compileContentGenerationPromptBundle(prepareContentProductionContext(index, contentUnitId))
+      const contentUnit = index.byKind.get('content_unit')?.find((entity) => String(entity.id) === String(contentUnitId))
+      if (!contentUnit) throw new Error(`content_unit not found: ${String(contentUnitId)}`)
+      const now = input.now?.() ?? new Date()
+      return buildContentUnitArtifact(index, contentUnit, { createdAt: now.toISOString() })
     },
     async buildArtifacts(artifactInput = {}) {
       const now = input.now?.() ?? new Date()

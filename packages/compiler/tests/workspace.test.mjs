@@ -9,6 +9,7 @@ import {
   buildMovScriptWorkspaceDomainIndex,
   createMovScriptWorkspaceService,
   createMovScriptWorkspaceDomainRepository,
+  createMovScriptContentCandidate,
   getMovScriptWorkspaceModel,
   lockMovScriptInlineCandidate,
   queryMovScriptCanonicalEntities,
@@ -16,13 +17,12 @@ import {
   queryMovScriptWorkspaceProductionContext,
   queryMovScriptWorkspaceSettings,
   selectMovScriptInlineCandidate,
+  selectMovScriptContentUnitCandidate,
   unlockMovScriptInlineCandidate,
-  updateMovScriptContentUnitEditablePrompt,
+  updateMovScriptContentUnitEditPrompt,
 } from '../../workspace/dist/index.js'
 import {
   buildMovScriptWorkspaceBuildArtifacts,
-  compileContentGenerationPromptBundle,
-  prepareContentProductionContext,
 } from '../dist/index.js'
 import {
   buildMovScriptWorkspace,
@@ -43,8 +43,9 @@ test('workspace domain indexes hierarchical source entities', () => {
   assert.equal(queryMovScriptWorkspaceSettings(index, { kind: 'character' }).length, 1)
   assert.equal(index.byKind.get('asset')?.length, 1)
   assert.equal(index.byKind.get('storyboard')?.length, 1)
-  assert.equal(index.byKind.get('content_unit')?.length, 1)
-  assert.equal(index.byKind.get('writing_expression')?.length, 1)
+  assert.equal(index.byKind.get('audio_cue')?.length, 1)
+  assert.equal(index.byKind.get('content_unit')?.length, 2)
+  assert.equal(index.byKind.get('expression_unit')?.length, 1)
   assert.equal(index.byKind.get('script')?.[0]?.path, 'scripts/main/script.json')
   assert.equal(index.documents.some((document) => document.path === 'scripts/main/script.md'), true)
   assert.equal(queryMovScriptCanonicalEntities(index).some((entity) => entity.path === 'scripts/main/script.md'), false)
@@ -66,8 +67,9 @@ test('workspace domain indexes hierarchical source entities', () => {
   assert.equal(context.segments.length, 1)
   assert.equal(context.scene_moments.length, 1)
   assert.equal(context.storyboards.length, 1)
-  assert.equal(context.writing_expressions.length, 1)
-  assert.equal(context.content_units.length, 1)
+  assert.equal(context.audio_cues.length, 1)
+  assert.equal(context.expression_units.length, 1)
+  assert.equal(context.content_units.length, 2)
 })
 
 test('compiler build artifacts are derived from canonical source only', () => {
@@ -90,10 +92,16 @@ test('compiler build artifacts are derived from canonical source only', () => {
   assert.ok(artifacts.assetIndex.assets.some((asset) => asset.id === 'wet_hair' && asset.owner.id === 'rain'))
   assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'references' && relation.from.id === 'k41m' && relation.to.id === 'r72k'))
   assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'references' && relation.from.id === 'k41m' && relation.to.id === 'main'))
-  assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'uses' && relation.from.id === 'c83x' && relation.to.id === 'wet_hair'))
-  assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'scene_moment' && item.audio.note === 'Rain low, phone vibration sharp.' && item.transition.out === 'hold_then_cut'))
+  assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'uses' && relation.from.id === 'cu_wet_hair_ref' && relation.to.id === 'wet_hair'))
+  assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'uses' && relation.from.id === 'k41m' && relation.to.id === 'scene_anchor'))
+  assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'uses' && relation.from.id === 'scene_anchor' && relation.to.id === 'wet_hair'))
+  assert.ok(artifacts.relationGraph.relations.some((relation) => relation.type === 'references' && relation.from.id === 'phone_vibration' && relation.to.id === 'r72k'))
+  assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'scene_moment' && item.transition.out === 'hold_then_cut'))
+  assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'audio_cue' && item.entity.id === 'phone_vibration' && item.cueKind === 'sound_effect'))
   assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'storyboard' && item.entity.id === 'main' && item.contentUnitIds.includes('k41m')))
   assert.ok(artifacts.impactReport.changedEntities[0].editorImpacts.some((impact) => impact.includes('Content production context')))
+  assert.equal(artifacts.contentUnitArtifacts.length, 2)
+  assert.equal(artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')?.runtimePanel.content_unit_type, 'storyboard_video')
 })
 
 test('compiler impact report traces planning and asset changes to affected content units', () => {
@@ -115,8 +123,8 @@ test('compiler impact report traces planning and asset changes to affected conte
       },
       {
         entityKind: 'keyframe',
-        id: 'c83x',
-        path: 'content_units/k41m/keyframes/c83x/keyframe.json',
+        id: 'scene_anchor',
+        path: 'productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json',
         state: 'modified',
       },
     ],
@@ -136,27 +144,34 @@ test('compiler impact report traces planning and asset changes to affected conte
   assert.ok(keyframeChange?.staleMarkers.includes('content_unit:k41m:visual_anchor_changed'))
 })
 
-test('content production context compiles prompt bundle from editable prompt plus planning refs', () => {
+test('content unit artifacts rebuild runtime panels from edit_prompt plus adapter context', () => {
   const index = buildMovScriptWorkspaceDomainIndex(sourceDocuments())
 
-  const context = prepareContentProductionContext(index, 'k41m')
-  const bundle = compileContentGenerationPromptBundle(context)
+  const artifacts = buildMovScriptWorkspaceBuildArtifacts({
+    index,
+    changedEntities: [],
+    buildId: 'build_test',
+    createdAt: '2026-06-07T00:00:00.000Z',
+  })
+  const assetRef = artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'cu_wet_hair_ref')
+  const video = artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')
 
-  assert.equal(bundle.prompt, 'Cold phone light on frightened face.')
-  assert.equal(bundle.negativePrompt, 'cartoon')
-  assert.equal(bundle.context.sceneMoment?.id, 'r72k')
-  assert.equal(bundle.context.storyboard?.id, 'main')
-  assert.equal(bundle.context.shotPlans.length, 1)
-  assert.equal(bundle.context.writingExpressions.length, 1)
-  assert.equal(bundle.context.projectStandards?.id, 'project_standards')
-  assert.equal(bundle.context.sceneKeyframes.length, 1)
-  assert.equal(bundle.context.sceneKeyframes[0].id, 'scene_anchor')
-  assert.equal(bundle.context.contentUnitKeyframes.length, 1)
-  assert.equal(bundle.context.contentUnitKeyframes[0].id, 'c83x')
-  assert.equal(bundle.references.assets.length, 1)
-  assert.equal(bundle.references.sceneKeyframes.length, 1)
-  assert.equal(bundle.references.contentUnitKeyframes.length, 1)
-  assert.equal(bundle.references.contentUnitResult?.resourceId, 'resource_video_1')
+  assert.equal(assetRef?.runtimePanel.output_kind, 'image')
+  assert.match(assetRef?.runtimePanel.prompt?.text ?? '', /Cold phone light reference/)
+  assert.equal(video?.runtimePanel.output_kind, 'video')
+  assert.match(video?.runtimePanel.prompt?.text ?? '', /Cold phone light on frightened face/)
+  assert.match(video?.runtimePanel.prompt?.text ?? '', /Unknown number lights up again/)
+  assert.match(video?.runtimePanel.prompt?.text ?? '', /Rain low, phone vibration sharp/)
+  assert.equal(video?.runtimePanel.prompt?.negative_text, 'cartoon')
+  assert.equal(video?.runtimePanel.runtime_request?.inputs.length, 0)
+  assert.equal(video?.runtimePanel.input_hash, video?.inputVersion.hash)
+  assert.equal(video?.runtimePanel.input_version, undefined)
+  assert.equal(video?.runtimePanel.dependency_hashes, undefined)
+  assert.equal(video?.runtimePanel.hash_rule, undefined)
+  assert.equal(video?.runtimePanel.upstream_selections, undefined)
+  assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'keyframe' && input.continuity_role === 'video_continuity'))
+  assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'expression_unit' && input.continuity_role === 'narrative_continuity'))
+  assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'audio_cue' && input.continuity_role === 'sound_continuity'))
 })
 
 test('workspace inline candidate writer updates asset json candidates and locks explicitly', async () => {
@@ -245,95 +260,71 @@ test('workspace inline candidate writer locks existing keyframe candidate', asyn
   assert.equal(saved.lock.resource_id, 'resource_keyframe_1')
 })
 
-test('workspace inline candidate writer selects and unlocks content unit candidates', async () => {
-  const files = new Map([
-    ['content_units/k41m/content_unit.json', JSON.stringify({
-      schema: 'movscript.content_unit.v1',
-      kind: 'content_unit',
-      id: 'k41m',
-      unit_kind: 'shot',
-      title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
-      },
-      candidates: [
-        { id: 'candidate_video_1', resource_id: 'resource_video_1' },
-        { id: 'candidate_video_2', resource_id: 'resource_video_2' },
-      ],
-      lock: { candidate_id: 'candidate_video_1', resource_id: 'resource_video_1' },
-    })],
-  ])
+test('workspace content candidate writer stores runtime candidates and selection outside content_unit source', async () => {
+  const files = new Map()
   const repository = memoryWorkspaceFileRepository(files)
 
-  const selected = await selectMovScriptInlineCandidate({
+  const candidate = await createMovScriptContentCandidate({
     fileRepository: repository,
-    targetPath: 'content_units/k41m/content_unit.json',
-    targetKind: 'content_unit',
+    contentUnitId: 'k41m',
     candidateId: 'candidate_video_2',
-    reason: 'approved_by_director',
+    inputVersion: { hash: 'hash_2' },
+    outputs: [{ kind: 'video', resource_id: 'resource_video_2', duration_sec: 4 }],
+    promptSnapshot: { text: 'runtime prompt' },
+    createdAt: '2026-06-07T00:00:00.000Z',
   })
-
-  assert.deepEqual(selected.record.lock, {
-    candidate_id: 'candidate_video_2',
-    resource_id: 'resource_video_2',
-    reason: 'approved_by_director',
-  })
-
-  const unlocked = await unlockMovScriptInlineCandidate({
+  const selected = await selectMovScriptContentUnitCandidate({
     fileRepository: repository,
-    targetPath: 'content_units/k41m/content_unit.json',
-    targetKind: 'content_unit',
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_video_2',
+    resourceId: 'resource_video_2',
+    acceptedInputHash: 'hash_2',
+    reason: 'approved_by_director',
+    selectedAt: '2026-06-07T00:00:00.000Z',
   })
-  const saved = JSON.parse(files.get(unlocked.path))
-  assert.equal(saved.lock, undefined)
-  assert.equal(saved.candidates.length, 2)
+
+  assert.equal(candidate.path, 'content_units/k41m/candidates/candidate_video_2/content_candidate.json')
+  assert.equal(candidate.record.outputs[0].resource_id, 'resource_video_2')
+  assert.equal(selected.path, 'content_units/k41m/selection.json')
+  assert.deepEqual(selected.record.target, { kind: 'content_unit', ref: 'content_units/k41m' })
+  assert.equal(selected.record.accepted_input_hash, 'hash_2')
 })
 
-test('workspace content unit prompt updater only changes editable prompt', async () => {
+test('workspace content unit prompt updater only changes edit_prompt', async () => {
   const files = new Map([
     ['content_units/k41m/content_unit.json', JSON.stringify({
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
-      },
-      editable_prompt: {
-        prompt: 'Old prompt',
-      },
-      candidates: [{ id: 'candidate_video_1', resource_id: 'resource_video_1' }],
-      lock: { candidate_id: 'candidate_video_1', resource_id: 'resource_video_1' },
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      edit_prompt: { text: 'Old prompt' },
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
 
-  const result = await updateMovScriptContentUnitEditablePrompt({
+  const result = await updateMovScriptContentUnitEditPrompt({
     fileRepository: repository,
     targetPath: 'content_units/k41m/content_unit.json',
-    editablePrompt: {
-      prompt: 'New prompt',
-      negative_prompt: 'distorted hands',
+    editPrompt: {
+      text: 'New prompt',
+      negative_text: 'distorted hands',
       notes: 'Keep camera movement restrained.',
     },
   })
 
-  assert.deepEqual(result.record.editable_prompt, {
-    prompt: 'New prompt',
-    negative_prompt: 'distorted hands',
+  assert.deepEqual(result.record.edit_prompt, {
+    text: 'New prompt',
+    negative_text: 'distorted hands',
     notes: 'Keep camera movement restrained.',
   })
-  assert.deepEqual(result.record.source_context, {
-    scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-    storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
-  })
-  assert.equal(result.record.candidates.length, 1)
-  assert.deepEqual(result.record.lock, { candidate_id: 'candidate_video_1', resource_id: 'resource_video_1' })
+  assert.equal(result.record.scene_moment_ref, 'productions/p8f3/segments/a19d/scene_moments/r72k')
+  assert.equal(result.record.storyboard_ref, 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main')
   const saved = JSON.parse(files.get(result.path))
-  assert.equal(saved.editable_prompt.prompt, 'New prompt')
+  assert.equal(saved.edit_prompt.text, 'New prompt')
 })
 
 test('workspace service facade exposes frontend-oriented domain operations', async () => {
@@ -351,26 +342,25 @@ test('workspace service facade exposes frontend-oriented domain operations', asy
     sceneMomentId: 'r72k',
   })
   assert.equal(productionContext.storyboards.length, 1)
-  assert.equal(productionContext.content_units.length, 1)
+  assert.equal(productionContext.content_units.length, 2)
 
-  await service.updateContentUnitEditablePrompt({
+  await service.updateContentUnitEditPrompt({
     targetPath: 'content_units/k41m/content_unit.json',
-    editablePrompt: {
-      prompt: 'Service prompt',
-      negative_prompt: 'flat lighting',
+    editPrompt: {
+      text: 'Service prompt',
+      negative_text: 'flat lighting',
     },
   })
-  await service.updateSceneMomentStoryboardTiming({
+  await service.updateEntityTransition({
     targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/scene_moment.json',
-    activeStoryboardId: 'main',
-    items: [{
-      storyboard_id: 'main',
-      order: 1,
+    transition: { out: 'hard_cut' },
+  })
+  await service.updateStoryboardTimeline({
+    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json',
+    timeline: {
       gap_after_sec: 0.4,
       caption: 'Phone glow returns.',
-    }],
-    audio: { note: 'Rain fades under phone vibration.' },
-    transition: { out: 'hard_cut' },
+    },
   })
   await service.updateStoryboardShotPlans({
     targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json',
@@ -385,39 +375,40 @@ test('workspace service facade exposes frontend-oriented domain operations', asy
       reference_image_refs: ['wet_hair'],
     }],
   })
-  await service.appendCandidate({
-    targetPath: 'content_units/k41m/content_unit.json',
-    targetKind: 'content_unit',
-    nonce: 'fixed',
-    payload: {
-      id: 'candidate_video_1',
-      resource_id: 'resource_video_1',
-      source: 'generated',
-    },
+  const firstArtifacts = buildMovScriptWorkspaceBuildArtifacts({
+    index: await service.loadIndex(),
+    changedEntities: [],
+    buildId: 'service_build_1',
+    createdAt: '2026-06-07T00:00:00.000Z',
   })
-  await service.selectCandidate({
-    targetPath: 'content_units/k41m/content_unit.json',
-    targetKind: 'content_unit',
-    candidateId: 'candidate_video_1',
+  const assetRefInput = firstArtifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'cu_wet_hair_ref')?.inputVersion
+  assert.ok(assetRefInput)
+  await service.createContentCandidate({
+    contentUnitId: 'cu_wet_hair_ref',
+    candidateId: 'candidate_asset_1',
+    inputVersion: assetRefInput,
+    outputs: [{ kind: 'image', resource_id: 'resource_asset_1' }],
+    promptSnapshot: firstArtifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'cu_wet_hair_ref')?.runtimePanel.prompt,
+    createdAt: '2026-06-07T00:00:00.000Z',
+  })
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'cu_wet_hair_ref',
+    candidateId: 'candidate_asset_1',
+    resourceId: 'resource_asset_1',
+    acceptedInputHash: assetRefInput.hash,
     reason: 'selected_from_frontend',
+    selectedAt: '2026-06-07T00:00:00.000Z',
   })
-  const prompt = compileContentGenerationPromptBundle(
-    prepareContentProductionContext(await service.loadIndex(), 'k41m'),
-  )
-  assert.equal(prompt.prompt, 'Service prompt')
-  assert.equal(prompt.negativePrompt, 'flat lighting')
-  assert.equal(prompt.context.shotPlans[0].camera.lens_mm, 50)
-  assert.equal(prompt.context.shotPlans[0].lighting.key, 'phone screen blue light')
-  assert.equal(prompt.references.contentUnitResult?.resourceId, 'resource_video_1')
-
-  await service.unlockCandidate({
-    targetPath: 'content_units/k41m/content_unit.json',
-    targetKind: 'content_unit',
+  const secondArtifacts = buildMovScriptWorkspaceBuildArtifacts({
+    index: await service.loadIndex(),
+    changedEntities: [],
+    buildId: 'service_build_2',
+    createdAt: '2026-06-07T00:00:00.000Z',
   })
-  const unlockedPrompt = compileContentGenerationPromptBundle(
-    prepareContentProductionContext(await service.loadIndex(), 'k41m'),
-  )
-  assert.equal(unlockedPrompt.references.contentUnitResult, undefined)
+  const videoPanel = secondArtifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')?.runtimePanel
+  assert.match(videoPanel?.prompt?.text ?? '', /Service prompt/)
+  assert.equal(videoPanel?.prompt?.negative_text, 'flat lighting')
+  assert.equal(videoPanel?.runtime_request?.inputs[0]?.resource_id, 'resource_asset_1')
 
   const artifacts = buildMovScriptWorkspaceBuildArtifacts({
     index: await service.loadIndex(),
@@ -425,9 +416,124 @@ test('workspace service facade exposes frontend-oriented domain operations', asy
     buildId: 'service_build',
     createdAt: '2026-06-07T00:00:00.000Z',
   })
-  assert.equal(artifacts.contentGenerationPrompts[0].prompt, 'Service prompt')
-  assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'scene_moment' && item.audio.note === 'Rain fades under phone vibration.' && item.transition.out === 'hard_cut'))
+  assert.equal(artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')?.runtimePanel.prompt?.negative_text, 'flat lighting')
+  assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'scene_moment' && item.transition.out === 'hard_cut'))
   assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'storyboard' && item.caption === 'Phone glow returns.' && item.gapAfterSec === 0.4))
+})
+
+test('content unit integration flow writes, compiles, generates, impacts, and regenerates explicitly', async () => {
+  const files = new Map(sourceFileEntries())
+  const repository = memoryWorkspaceFileRepository(files)
+  const service = createMovScriptWorkspaceService({
+    fileRepository: repository,
+    now: () => new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  const firstBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+  assert.equal(firstBuild.status, 'built')
+  const firstAssetInput = await service.readContentUnitInputVersion('cu_wet_hair_ref')
+  const firstAssetPanel = await service.readContentUnitRuntimePanel('cu_wet_hair_ref')
+  const firstVideoInput = await service.readContentUnitInputVersion('k41m')
+  assert.ok(firstAssetInput?.hash)
+  assert.equal(firstAssetPanel?.output_kind, 'image')
+  assert.ok(firstVideoInput?.hash)
+
+  await service.createContentCandidate({
+    contentUnitId: 'cu_wet_hair_ref',
+    candidateId: 'candidate_asset_1',
+    inputVersion: firstAssetInput,
+    outputs: [{ kind: 'image', resource_id: 'resource_asset_1' }],
+    promptSnapshot: firstAssetPanel?.prompt,
+    createdAt: '2026-06-07T00:01:00.000Z',
+  })
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'cu_wet_hair_ref',
+    candidateId: 'candidate_asset_1',
+    resourceId: 'resource_asset_1',
+    acceptedInputHash: String(firstAssetInput.hash),
+    reason: 'initial_asset_reference',
+    selectedAt: '2026-06-07T00:01:00.000Z',
+  })
+
+  const secondBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:02:00.000Z'),
+  })
+  assert.equal(secondBuild.status, 'built')
+  const secondVideoPanel = await service.readContentUnitRuntimePanel('k41m')
+  const secondVideoInput = await service.readContentUnitInputVersion('k41m')
+  assert.equal(secondVideoPanel?.runtime_request?.inputs[0]?.resource_id, 'resource_asset_1')
+  assert.notEqual(secondVideoInput?.hash, firstVideoInput.hash)
+
+  await service.createContentCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_video_1',
+    inputVersion: secondVideoInput,
+    outputs: [{ kind: 'video', resource_id: 'resource_video_1', duration_sec: 4 }],
+    promptSnapshot: secondVideoPanel?.prompt,
+    createdAt: '2026-06-07T00:03:00.000Z',
+  })
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_video_1',
+    resourceId: 'resource_video_1',
+    acceptedInputHash: String(secondVideoInput?.hash),
+    reason: 'initial_video_selection',
+    selectedAt: '2026-06-07T00:03:00.000Z',
+  })
+
+  const keyframe = JSON.parse(files.get('productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json'))
+  keyframe.continuity = { ...keyframe.continuity, hair: 'wet hair pushed across left cheek' }
+  keyframe.visual_intent = 'Rainy apartment scene anchor with wet hair pushed across left cheek.'
+  files.set('productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json', `${JSON.stringify(keyframe, null, 2)}\n`)
+
+  const impactBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:00.000Z'),
+  })
+  assert.equal(impactBuild.status, 'built')
+  const impactReport = JSON.parse(files.get(impactBuild.manifest.output.impactReportPath))
+  const changedKeyframe = impactReport.changedEntities.find((entity) => entity.entityKind === 'keyframe' && entity.id === 'scene_anchor')
+  const staleVideo = await service.readContentUnitSelectionValidity('k41m')
+  assert.ok(changedKeyframe?.affectedContentUnits.some((entity) => entity.id === 'k41m'))
+  assert.ok(changedKeyframe?.staleMarkers.includes('content_unit:k41m:visual_anchor_changed'))
+  assert.equal(staleVideo?.selected, true)
+  assert.equal(staleVideo?.stale, true)
+
+  const regeneratedVideoInput = await service.readContentUnitInputVersion('k41m')
+  const regeneratedVideoPanel = await service.readContentUnitRuntimePanel('k41m')
+  assert.notEqual(regeneratedVideoInput?.hash, secondVideoInput?.hash)
+  await service.createContentCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_video_2',
+    inputVersion: regeneratedVideoInput,
+    outputs: [{ kind: 'video', resource_id: 'resource_video_2', duration_sec: 4 }],
+    promptSnapshot: regeneratedVideoPanel?.prompt,
+    createdAt: '2026-06-07T00:05:00.000Z',
+  })
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_video_2',
+    resourceId: 'resource_video_2',
+    acceptedInputHash: String(regeneratedVideoInput?.hash),
+    reason: 'regenerated_after_keyframe_change',
+    selectedAt: '2026-06-07T00:05:00.000Z',
+  })
+
+  const finalBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:06:00.000Z'),
+  })
+  assert.equal(finalBuild.status, 'built')
+  const finalValidity = await service.readContentUnitSelectionValidity('k41m')
+  const finalPanel = await service.readContentUnitRuntimePanel('k41m')
+  assert.equal(finalValidity?.candidate_id, 'candidate_video_2')
+  assert.equal(finalValidity?.resource_id, 'resource_video_2')
+  assert.equal(finalValidity?.stale, false)
+  assert.equal(finalPanel?.runtime_request?.inputs[0]?.resource_id, 'resource_asset_1')
 })
 
 test('workspace service snapshots script markdown into explicit version and blocks', async () => {
@@ -502,14 +608,10 @@ test('node workspace service composes with compiler review and build for adapter
     })
     assert.equal(review.readyToBuild, true)
 
-    await service.updateContentUnitEditablePrompt({
+    await service.updateContentUnitEditPrompt({
       targetPath: 'content_units/k41m/content_unit.json',
-      editablePrompt: { prompt: 'Node service prompt' },
+      editPrompt: { text: 'Node service prompt' },
     })
-    const prompt = compileContentGenerationPromptBundle(
-      prepareContentProductionContext(await service.loadIndex(), 'k41m'),
-    )
-    assert.equal(prompt.prompt, 'Node service prompt')
 
     const build = await buildMovScriptWorkspace({
       fileRepository,
@@ -519,11 +621,15 @@ test('node workspace service composes with compiler review and build for adapter
     assert.equal(build.manifest?.output.editorStatePath, '.build/current/editor-state.json')
     const editorState = await service.readEditorState()
     const previewTimeline = await service.readPreviewTimeline('p8f3')
-    const generationPrompt = await service.readContentGenerationPrompt('k41m')
+    const runtimePanel = await service.readContentUnitRuntimePanel('k41m')
+    const inputVersion = await service.readContentUnitInputVersion('k41m')
+    const selectionValidity = await service.readContentUnitSelectionValidity('k41m')
     assert.equal(editorState?.schema, 'movscript.editor-state.v1')
     assert.equal(previewTimeline?.schema, 'movscript.preview_timeline.v1')
-    assert.equal(generationPrompt?.schema, 'movscript.compiled_generation_prompt.v1')
-    assert.equal(generationPrompt?.prompt, 'Node service prompt')
+    assert.equal(runtimePanel?.schema, 'movscript.content_unit_runtime_panel.v1')
+    assert.match(runtimePanel?.prompt?.text ?? '', /Node service prompt/)
+    assert.equal(inputVersion?.schema, 'movscript.input_version.v1')
+    assert.equal(selectionValidity?.schema, 'movscript.content_unit_selection_validity.v1')
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -601,15 +707,18 @@ test('workspace domain model resolves entity editing model with semantic schemas
   assert.deepEqual(model.schemaIds, ['movscript.project_standards.v1'])
 })
 
-test('scene moment source schema keeps audio and transition at storyboard timing level', () => {
-  const schema = getSemanticEntitySchemaEntry('movscript.scene_moment.v1')
-  const timing = schema?.jsonSchema.properties.storyboard_timing
+test('planning schemas keep transition local and audio cues independent', () => {
+  const sceneMomentSchema = getSemanticEntitySchemaEntry('movscript.scene_moment.v1')
+  const storyboardSchema = getSemanticEntitySchemaEntry('movscript.storyboard.v1')
+  const audioCueSchema = getSemanticEntitySchemaEntry('movscript.audio_cue.v1')
 
-  assert.equal(schema?.entityKind, 'scene_moment')
-  assert.ok(timing.properties.audio)
-  assert.ok(timing.properties.transition)
-  assert.equal(timing.properties.items.items.properties.audio, undefined)
-  assert.equal(timing.properties.items.items.properties.transition, undefined)
+  assert.equal(sceneMomentSchema?.entityKind, 'scene_moment')
+  assert.equal(sceneMomentSchema?.jsonSchema.properties.storyboard_timing, undefined)
+  assert.ok(sceneMomentSchema?.jsonSchema.properties.transition)
+  assert.ok(storyboardSchema?.jsonSchema.properties.transition)
+  assert.ok(storyboardSchema?.jsonSchema.properties.timeline)
+  assert.equal(audioCueSchema?.entityKind, 'audio_cue')
+  assert.ok(audioCueSchema?.jsonSchema.properties.timing)
 })
 
 test('project workspace paths use source root and build at repository root', () => {
@@ -685,28 +794,44 @@ test('compiler build reads hierarchical source root and writes derived artifacts
   assert.equal(files.has('.build/indexes/relation-graph.json'), true)
   assert.equal(files.has('.build/current/domain-tree.json'), true)
   assert.equal(files.has('.build/current/editor-state.json'), true)
-  assert.equal(files.has('.build/current/content_units/k41m/generation_prompt.json'), true)
+  assert.equal(files.has('.build/current/content_units/k41m/runtime_panel.json'), true)
+  assert.equal(files.has('.build/current/content_units/k41m/input_version.json'), true)
+  assert.equal(files.has('.build/current/content_units/k41m/dependency_report.json'), true)
+  assert.equal(files.has('.build/current/content_units/k41m/selection_validity.json'), true)
 
   const domainIndex = JSON.parse(files.get('.build/indexes/domain-index.json'))
   const previewTimeline = JSON.parse(files.get('.build/current/productions/p8f3/preview_timeline.json'))
-  const generationPrompt = JSON.parse(files.get('.build/current/content_units/k41m/generation_prompt.json'))
+  const runtimePanel = JSON.parse(files.get('.build/current/content_units/k41m/runtime_panel.json'))
+  const inputVersion = JSON.parse(files.get('.build/current/content_units/k41m/input_version.json'))
+  const selectionValidity = JSON.parse(files.get('.build/current/content_units/k41m/selection_validity.json'))
   const editorState = JSON.parse(files.get('.build/current/editor-state.json'))
   const impactReport = JSON.parse(files.get(result.manifest.output.impactReportPath))
   assert.ok(domainIndex.entities.some((entity) => entity.entityKind === 'asset'))
   assert.ok(domainIndex.entities.some((entity) => entity.entityKind === 'storyboard'))
   assert.ok(domainIndex.entities.some((entity) => entity.entityKind === 'content_unit'))
   assert.equal(previewTimeline.schema, 'movscript.preview_timeline.v1')
-  assert.equal(generationPrompt.schema, 'movscript.compiled_generation_prompt.v1')
-  assert.equal(generationPrompt.prompt, 'Cold phone light on frightened face.')
-  assert.equal(generationPrompt.context.storyboard.id, 'main')
-  assert.equal(generationPrompt.context.shotPlans.length, 1)
-  assert.equal(generationPrompt.context.assets[0].id, 'wet_hair')
-  assert.equal(generationPrompt.context.contentUnitKeyframes[0].id, 'c83x')
-  assert.equal(generationPrompt.references.assets[0].resourceId, 'resource_1')
-  assert.equal(generationPrompt.references.sceneKeyframes[0].resourceId, 'resource_scene_anchor')
-  assert.equal(generationPrompt.references.contentUnitKeyframes[0].resourceId, 'resource_keyframe_1')
-  assert.equal(generationPrompt.references.contentUnitResult.resourceId, 'resource_video_1')
-  assert.equal(editorState.contentGenerationPrompts[0].contentUnitId, 'k41m')
+  assert.equal(runtimePanel.schema, 'movscript.content_unit_runtime_panel.v1')
+  assert.equal(runtimePanel.content_unit_type, 'storyboard_video')
+  assert.equal(runtimePanel.input_hash, inputVersion.hash)
+  assert.equal(runtimePanel.input_version, undefined)
+  assert.equal(runtimePanel.dependency_hashes, undefined)
+  assert.equal(runtimePanel.hash_rule, undefined)
+  assert.equal(runtimePanel.upstream_selections, undefined)
+  assert.match(runtimePanel.prompt.text, /Cold phone light on frightened face/)
+  assert.match(runtimePanel.prompt.text, /Scene anchor/)
+  assert.match(runtimePanel.prompt.text, /Unknown number lights up again/)
+  assert.match(runtimePanel.prompt.text, /Rain low, phone vibration sharp/)
+  assert.equal(inputVersion.schema, 'movscript.input_version.v1')
+  assert.equal(inputVersion.dependency_hashes, undefined)
+  assert.equal(inputVersion.hash_rule, undefined)
+  assert.equal(inputVersion.upstream_selections, undefined)
+  const dependencyReport = JSON.parse(files.get('.build/current/content_units/k41m/dependency_report.json'))
+  assert.ok(dependencyReport.hash_inputs.some((input) => input.role === 'keyframe'))
+  assert.ok(dependencyReport.hash_inputs.some((input) => input.role === 'expression_unit'))
+  assert.ok(dependencyReport.hash_inputs.some((input) => input.role === 'audio_cue'))
+  assert.equal(selectionValidity.schema, 'movscript.content_unit_selection_validity.v1')
+  assert.equal(selectionValidity.selected, false)
+  assert.equal(editorState.contentUnitRuntimePanels.some((panel) => panel.contentUnitId === 'k41m'), true)
   assert.ok(impactReport.changedEntities.some((entity) => entity.entityKind === 'content_unit' && entity.editorImpacts.some((impact) => impact.includes('Content production context'))))
 })
 
@@ -786,13 +911,12 @@ test('workspace build removes stale preview timelines for deleted productions', 
   assert.equal(files.has('.build/current/productions/p8f3/preview_timeline.json'), true)
 })
 
-test('workspace build removes stale compiled prompts for deleted content units', async () => {
+test('workspace build removes stale content unit artifacts for deleted content units', async () => {
   const files = new Map(sourceFileEntries())
-  files.set('.build/current/content_units/old/generation_prompt.json', JSON.stringify({
-    schema: 'movscript.compiled_generation_prompt.v1',
-    contentUnitId: 'old',
-    prompt: 'old',
-    context: {},
+  files.set('.build/current/content_units/old/runtime_panel.json', JSON.stringify({
+    schema: 'movscript.content_unit_runtime_panel.v1',
+    content_unit_id: 'old',
+    content_unit_type: 'storyboard_video',
   }))
   const repository = memoryWorkspaceFileRepository(files)
 
@@ -802,8 +926,8 @@ test('workspace build removes stale compiled prompts for deleted content units',
   })
 
   assert.equal(result.status, 'built')
-  assert.equal(files.has('.build/current/content_units/old/generation_prompt.json'), false)
-  assert.equal(files.has('.build/current/content_units/k41m/generation_prompt.json'), true)
+  assert.equal(files.has('.build/current/content_units/old/runtime_panel.json'), false)
+  assert.equal(files.has('.build/current/content_units/k41m/runtime_panel.json'), true)
 })
 
 test('workspace source review rejects path schema mismatch and unresolved content unit references', async () => {
@@ -818,13 +942,11 @@ test('workspace source review rejects path schema mismatch and unresolved conten
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/missing/segments/missing/scene_moments/missing',
-        storyboard_ref: 'productions/missing/segments/missing/scene_moments/missing/storyboards/missing',
-        shot_plan_id: 'shot_plan_1',
-      },
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/missing/segments/missing/scene_moments/missing',
+      storyboard_ref: 'productions/missing/segments/missing/scene_moments/missing/storyboards/missing',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -839,8 +961,6 @@ test('workspace source review rejects path schema mismatch and unresolved conten
   assert.ok(review.issues.some((issue) => issue.message.includes('schema kind asset does not match source path entity setting')))
   assert.ok(review.issues.some((issue) => issue.message.includes('scene_moment_ref does not resolve')))
   assert.ok(review.issues.some((issue) => issue.message.includes('storyboard_ref does not resolve')))
-  assert.ok(review.issues.some((issue) => issue.message.includes('do not reference shot_plan_id')))
-  assert.ok(review.issues.some((issue) => issue.message.includes('$.source_context.shot_plan_id is not allowed')))
 })
 
 test('workspace source review rejects content unit storyboard outside referenced scene moment', async () => {
@@ -870,12 +990,11 @@ test('workspace source review rejects content unit storyboard outside referenced
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/a',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/b/storyboards/b',
-      },
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/a',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/b/storyboards/b',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -886,7 +1005,7 @@ test('workspace source review rejects content unit storyboard outside referenced
   })
 
   assert.equal(review.readyToBuild, false)
-  assert.ok(review.issues.some((issue) => issue.message.includes('storyboard_ref is not under source_context.scene_moment_ref')))
+  assert.ok(review.issues.some((issue) => issue.message.includes('storyboard_ref is not under scene_moment_ref')))
 })
 
 test('workspace source review rejects unresolved storyboard setting refs', async () => {
@@ -996,12 +1115,11 @@ test('workspace source review validates min length in source references', async 
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: '',
-        storyboard_ref: '',
-      },
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: '',
+      storyboard_ref: '',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -1012,11 +1130,11 @@ test('workspace source review validates min length in source references', async 
   })
 
   assert.equal(review.readyToBuild, false)
-  assert.ok(review.issues.some((issue) => issue.message.includes('$.source_context.scene_moment_ref must contain at least 1 character')))
-  assert.ok(review.issues.some((issue) => issue.message.includes('$.source_context.storyboard_ref must contain at least 1 character')))
+  assert.ok(review.issues.some((issue) => issue.message.includes('$.scene_moment_ref must contain at least 1 character')))
+  assert.ok(review.issues.some((issue) => issue.message.includes('$.storyboard_ref must contain at least 1 character')))
 })
 
-test('workspace source review rejects unresolved scene moment storyboard timing', async () => {
+test('workspace source review rejects unresolved content unit keyframe refs', async () => {
   const files = new Map([
     ['productions/p8f3/production.json', JSON.stringify({ schema: 'movscript.production.v1', kind: 'production', id: 'p8f3', title: 'Episode 1' })],
     ['productions/p8f3/segments/a19d/segment.json', JSON.stringify({ schema: 'movscript.segment.v1', kind: 'segment', id: 'a19d', title: 'Opening', order: 1 })],
@@ -1026,9 +1144,22 @@ test('workspace source review rejects unresolved scene moment storyboard timing'
       id: 'r72k',
       title: 'Phone call',
       order: 1,
-      storyboard_timing: {
-        items: [{ storyboard_id: 'missing', order: 1 }],
-      },
+    })],
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
+      schema: 'movscript.storyboard.v1',
+      kind: 'storyboard',
+      id: 'main',
+    })],
+    ['content_units/sound_1/content_unit.json', JSON.stringify({
+      schema: 'movscript.content_unit.v1',
+      kind: 'content_unit',
+      id: 'sound_1',
+      title: 'Phone vibration sound',
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      keyframe_refs: ['missing_keyframe'],
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -1039,7 +1170,7 @@ test('workspace source review rejects unresolved scene moment storyboard timing'
   })
 
   assert.equal(review.readyToBuild, false)
-  assert.ok(review.issues.some((issue) => issue.message.includes('storyboard_timing.items[0].storyboard_id does not resolve')))
+  assert.ok(review.issues.some((issue) => issue.message.includes('keyframe_refs[0] does not resolve')))
 })
 
 test('workspace source review rejects unresolved keyframe reference assets', async () => {
@@ -1062,14 +1193,14 @@ test('workspace source review rejects unresolved keyframe reference assets', asy
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
-      },
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      keyframe_refs: ['c83x'],
     })],
-    ['content_units/k41m/keyframes/c83x/keyframe.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/c83x/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
       kind: 'keyframe',
       id: 'c83x',
@@ -1087,7 +1218,7 @@ test('workspace source review rejects unresolved keyframe reference assets', asy
   assert.ok(review.issues.some((issue) => issue.message.includes('keyframe reference_asset_refs[0] does not resolve: missing')))
 })
 
-test('workspace source review leaves legacy inline candidate fields to runtime and decision stores', async () => {
+test('workspace source review accepts runtime content candidate and selection documents outside content_unit source', async () => {
   const files = new Map([
     ['settings/hero/setting.json', JSON.stringify({
       schema: 'movscript.setting.v1',
@@ -1108,23 +1239,22 @@ test('workspace source review leaves legacy inline candidate fields to runtime a
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'missing',
-        storyboard_ref: 'missing',
-      },
-      candidates: [
-        { id: 'candidate_result', resource_id: 'resource_a' },
-        { id: 'candidate_result', resource_id: 'resource_b' },
-      ],
+      content_unit_type: 'asset_ref',
+      output_kind: 'image',
+      asset_ref: 'portrait',
     })],
-    ['content_units/k41m/keyframes/c83x/keyframe.json', JSON.stringify({
-      schema: 'movscript.keyframe.v1',
-      kind: 'keyframe',
-      id: 'c83x',
-      candidates: [{ id: 'candidate_keyframe', resource_id: 'resource_keyframe_a' }],
-      lock: { candidate_id: 'candidate_keyframe', resource_id: 'resource_keyframe_b' },
+    ['content_units/k41m/candidates/candidate_result/content_candidate.json', JSON.stringify({
+      schema: 'movscript.content_candidate.v1',
+      id: 'candidate_result',
+      content_unit_ref: 'content_units/k41m',
+      outputs: [{ kind: 'image', resource_id: 'resource_a' }],
+    })],
+    ['content_units/k41m/selection.json', JSON.stringify({
+      schema: 'movscript.selection.v1',
+      target: { kind: 'content_unit', ref: 'content_units/k41m' },
+      candidate_id: 'candidate_result',
+      resource_id: 'resource_a',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -1134,9 +1264,9 @@ test('workspace source review leaves legacy inline candidate fields to runtime a
     now: new Date('2026-06-07T00:00:00.000Z'),
   })
 
-  assert.equal(review.readyToBuild, false)
+  assert.equal(review.readyToBuild, true)
   assert.equal(review.issues.some((issue) => issue.message.includes('candidate')), false)
-  assert.equal(review.issues.some((issue) => issue.message.includes('lock')), false)
+  assert.equal(review.issues.some((issue) => issue.message.includes('selection')), false)
 })
 
 test('workspace build rejects invalid source JSON', async () => {
@@ -1176,7 +1306,7 @@ function sourceFileEntries() {
       kind: 'asset',
       id: 'wet_hair',
       slot: 'character_state_reference',
-      lock: { resource_id: 'resource_1' },
+      prompt_hint: 'Wet hair and rain on the hero face.',
     })],
     ['productions/p8f3/production.json', JSON.stringify({ schema: 'movscript.production.v1', kind: 'production', id: 'p8f3', title: 'Episode 1' })],
     ['productions/p8f3/segments/a19d/segment.json', JSON.stringify({ schema: 'movscript.segment.v1', kind: 'segment', id: 'a19d', title: 'Opening', order: 1 })],
@@ -1186,11 +1316,7 @@ function sourceFileEntries() {
       id: 'r72k',
       title: 'Phone call',
       order: 1,
-      storyboard_timing: {
-        items: [{ storyboard_id: 'main', order: 1 }],
-        audio: { note: 'Rain low, phone vibration sharp.' },
-        transition: { out: 'hold_then_cut' },
-      },
+      transition: { out: 'hold_then_cut' },
     })],
     ['productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
@@ -1199,18 +1325,32 @@ function sourceFileEntries() {
       title: 'Scene anchor',
       visual_intent: 'Rainy apartment scene anchor.',
       reference_asset_refs: ['wet_hair'],
-      lock: { resource_id: 'resource_scene_anchor' },
+      continuity: { hair: 'wet and stuck to forehead', lighting: 'cold phone glow' },
     })],
     ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
       schema: 'movscript.storyboard.v1',
       kind: 'storyboard',
       id: 'main',
+      order: 1,
+      timeline: { caption: 'Phone glow returns.', gap_after_sec: 0.4 },
       setting_refs: [{ setting_id: 'hero', setting_state_id: 'rain', role: 'subject' }],
       shot_plans: [{ id: 'shot_plan_1', order: 1, shot_size: 'close_up' }],
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/writing_expressions/caption_1/writing_expression.json', JSON.stringify({
-      schema: 'movscript.writing_expression.v1',
-      kind: 'writing_expression',
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/audio_cues/phone_vibration/audio_cue.json', JSON.stringify({
+      schema: 'movscript.audio_cue.v1',
+      kind: 'audio_cue',
+      id: 'phone_vibration',
+      title: 'Phone vibration',
+      cue_kind: 'sound_effect',
+      order: 1,
+      scope_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      timing: { start: 'after_action', duration_sec: 1.2 },
+      prompt_hint: 'Rain low, phone vibration sharp.',
+    })],
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/expression_units/caption_1/expression_unit.json', JSON.stringify({
+      schema: 'movscript.expression_unit.v1',
+      kind: 'expression_unit',
       id: 'caption_1',
       expression_kind: 'caption',
       text: 'Unknown number lights up again.',
@@ -1219,26 +1359,31 @@ function sourceFileEntries() {
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
-      unit_kind: 'shot',
       title: 'Phone close-up',
-      source_context: {
-        scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-        storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      content_unit_type: 'storyboard_video',
+      output_kind: 'video',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      keyframe_refs: ['scene_anchor'],
+      edit_prompt: {
+        text: 'Cold phone light on frightened face.',
+        negative_text: 'cartoon',
       },
-      editable_prompt: {
-        prompt: 'Cold phone light on frightened face.',
-        negative_prompt: 'cartoon',
-      },
-      lock: { resource_id: 'resource_video_1' },
+      model_intent: { capability: 'video', duration_sec: 4 },
     })],
-    ['content_units/k41m/keyframes/c83x/keyframe.json', JSON.stringify({
-      schema: 'movscript.keyframe.v1',
-      kind: 'keyframe',
-      id: 'c83x',
-      title: 'Phone light close-up',
-      visual_intent: 'Phone blue light illuminates the hero face.',
-      reference_asset_refs: ['wet_hair'],
-      lock: { resource_id: 'resource_keyframe_1' },
+    ['content_units/cu_wet_hair_ref/content_unit.json', JSON.stringify({
+      schema: 'movscript.content_unit.v1',
+      kind: 'content_unit',
+      id: 'cu_wet_hair_ref',
+      title: 'Wet hair visual reference',
+      content_unit_type: 'asset_ref',
+      output_kind: 'image',
+      asset_ref: 'wet_hair',
+      edit_prompt: {
+        text: 'Cold phone light reference for wet hair continuity.',
+        negative_text: 'cartoon',
+      },
+      model_intent: { capability: 'image', aspect_ratio: '1:1' },
     })],
   ]
 }

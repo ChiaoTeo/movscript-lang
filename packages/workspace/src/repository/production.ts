@@ -12,6 +12,7 @@ export interface MovScriptProductionWorkspaceSnapshot {
 
 export interface MovScriptProductionWorkspaceNode {
   title?: string
+  transition?: MovScriptProductionWorkspaceTransitionNode
 }
 
 export interface MovScriptProductionWorkspaceSegmentNode {
@@ -21,6 +22,7 @@ export interface MovScriptProductionWorkspaceSegmentNode {
   kind?: string
   summary?: string
   order?: number
+  transition?: MovScriptProductionWorkspaceTransitionNode
   script_block_id?: string | number | null
   scene_moments?: MovScriptProductionWorkspaceSceneMomentNode[]
   __delete?: boolean
@@ -39,10 +41,12 @@ export interface MovScriptProductionWorkspaceSceneMomentNode {
   mood?: string
   description?: string
   order?: number
+  transition?: MovScriptProductionWorkspaceTransitionNode
   script_block_id?: string | number | null
   settings?: MovScriptProductionWorkspaceSettingRefNode[]
-  writing_expressions?: MovScriptProductionWorkspaceWritingExpressionNode[]
+  expression_units?: MovScriptProductionWorkspaceExpressionUnitNode[]
   storyboards?: MovScriptProductionWorkspaceStoryboardNode[]
+  audio_cues?: MovScriptProductionWorkspaceAudioCueNode[]
   __delete?: boolean
 }
 
@@ -51,9 +55,42 @@ export interface MovScriptProductionWorkspaceStoryboardNode {
   client_id?: string
   title?: string
   order?: number
+  transition?: MovScriptProductionWorkspaceTransitionNode
+  timeline?: MovScriptProductionWorkspaceTimelineNode
+  gap_after_sec?: number
+  caption?: string
+  duration_sec?: number
   settings?: MovScriptProductionWorkspaceSettingRefNode[]
   shot_plans?: Array<Record<string, unknown>>
   __delete?: boolean
+}
+
+export interface MovScriptProductionWorkspaceAudioCueNode {
+  id?: string | number
+  client_id?: string
+  title?: string
+  cue_kind?: string
+  kind?: string
+  order?: number
+  storyboard_id?: string | number
+  storyboard_ref?: string
+  shot_plan_id?: string
+  timing?: Record<string, unknown>
+  prompt_hint?: string
+  asset_refs?: unknown[]
+  __delete?: boolean
+}
+
+export interface MovScriptProductionWorkspaceTransitionNode {
+  in?: string
+  out?: string
+  notes?: string
+}
+
+export interface MovScriptProductionWorkspaceTimelineNode {
+  gap_after_sec?: number
+  caption?: string
+  duration_sec?: number
 }
 
 export interface MovScriptProductionWorkspaceSettingRefNode {
@@ -66,7 +103,7 @@ export interface MovScriptProductionWorkspaceSettingRefNode {
   __delete?: boolean
 }
 
-export interface MovScriptProductionWorkspaceWritingExpressionNode {
+export interface MovScriptProductionWorkspaceExpressionUnitNode {
   id?: string | number
   client_id?: string
   kind?: string
@@ -75,6 +112,7 @@ export interface MovScriptProductionWorkspaceWritingExpressionNode {
   note?: string
   intent?: string
   order?: number
+  span?: Record<string, unknown>
   script_block_id?: string | number | null
   __delete?: boolean
 }
@@ -106,6 +144,7 @@ export async function saveMovScriptProductionWorkspaceSnapshot(
     kind: 'production',
     id: productionId,
     title: stringValue(input.snapshot.production?.title ?? production.title) ?? `Production ${displayId(productionId, 'production')}`,
+    transition: normalizeTransition(input.snapshot.production?.transition ?? production.transition),
     updated_at: (input.now ?? new Date()).toISOString(),
   }))
   writtenPaths.push(productionPath)
@@ -124,6 +163,7 @@ export async function saveMovScriptProductionWorkspaceSnapshot(
       segment_kind: stringValue(segment.kind ?? existingSegment.segment_kind),
       summary: stringValue(segment.summary ?? existingSegment.summary),
       order: finiteNumber(segment.order) ?? finiteNumber(existingSegment.order),
+      transition: normalizeTransition(segment.transition ?? existingSegment.transition),
       script_block_id: nullableRef(segment.script_block_id ?? existingSegment.script_block_id, 'script_block'),
       ...(segment.__delete === true ? { __delete: true } : {}),
     }))
@@ -136,14 +176,9 @@ export async function saveMovScriptProductionWorkspaceSnapshot(
       const momentPath = `${momentDir}/scene_moment.json`
       const existingMoment = await readOptionalRecord(input.fileRepository, momentPath)
       const storyboardInputs = (moment.storyboards?.length ? moment.storyboards : [{
-        id: moment.storyboard_id ?? firstExistingStoryboardTimingId(existingMoment) ?? 'main',
+        id: moment.storyboard_id ?? 'main',
         settings: moment.settings,
       }]) satisfies MovScriptProductionWorkspaceStoryboardNode[]
-      const storyboardTiming = moment.storyboards?.length
-        ? mergeStoryboardTiming(existingMoment, storyboardInputs)
-        : (isRecord(existingMoment.storyboard_timing)
-            ? existingMoment.storyboard_timing
-            : buildStoryboardTiming(storyboardInputs))
       await writeRecord(input.fileRepository, momentPath, pruneUndefined({
         ...stripWorkspacePrivateFields(existingMoment),
         schema: 'movscript.scene_moment.v1',
@@ -158,22 +193,31 @@ export async function saveMovScriptProductionWorkspaceSnapshot(
         emotion: stringValue(moment.mood ?? existingMoment.emotion),
         description: stringValue(moment.description ?? existingMoment.description),
         order: finiteNumber(moment.order) ?? finiteNumber(existingMoment.order),
+        transition: normalizeTransition(moment.transition ?? existingMoment.transition ?? legacyStoryboardTimingTransition(existingMoment)),
         script_block_id: nullableRef(moment.script_block_id ?? existingMoment.script_block_id, 'script_block'),
-        storyboard_timing: storyboardTiming,
+        storyboard_timing: undefined,
         ...(moment.__delete === true ? { __delete: true } : {}),
       }))
       writtenPaths.push(momentPath)
 
-      for (const storyboard of storyboardInputs) {
+      for (const [storyboardIndex, storyboard] of storyboardInputs.entries()) {
         const storyboardId = stableId(storyboard.id ?? storyboard.client_id ?? 'main', 'storyboard')
         const storyboardPath = `${momentDir}/storyboards/${slugId(storyboardId, 'storyboard')}/storyboard.json`
         const existingStoryboard = await readOptionalRecord(input.fileRepository, storyboardPath)
+        const legacyTiming = legacyStoryboardTimingItem(existingMoment, storyboardId)
         await writeRecord(input.fileRepository, storyboardPath, pruneUndefined({
           ...stripWorkspacePrivateFields(existingStoryboard),
           schema: 'movscript.storyboard.v1',
           kind: 'storyboard',
           id: storyboardId,
           title: stringValue(storyboard.title ?? existingStoryboard.title) ?? `${stringValue(moment.title) ?? displayId(momentId, 'scene_moment')} storyboard`,
+          order: finiteNumber(storyboard.order) ?? finiteNumber(existingStoryboard.order) ?? finiteNumber(legacyTiming?.order) ?? storyboardIndex + 1,
+          transition: normalizeTransition(storyboard.transition ?? existingStoryboard.transition),
+          timeline: normalizeTimeline(storyboard.timeline ?? {
+            gap_after_sec: storyboard.gap_after_sec,
+            caption: storyboard.caption,
+            duration_sec: storyboard.duration_sec,
+          }, existingStoryboard.timeline, legacyTiming),
           setting_refs: normalizeSettingRefs(storyboard.settings ?? moment.settings, existingStoryboard.setting_refs),
           shot_plans: Array.isArray(storyboard.shot_plans) ? storyboard.shot_plans.filter(isRecord) : existingStoryboard.shot_plans,
           ...(storyboard.__delete === true ? { __delete: true } : {}),
@@ -181,24 +225,46 @@ export async function saveMovScriptProductionWorkspaceSnapshot(
         writtenPaths.push(storyboardPath)
       }
 
-      for (const expression of moment.writing_expressions ?? []) {
-        const writingExpressionStoryboardId = stableId(storyboardInputs[0]?.id ?? storyboardInputs[0]?.client_id ?? 'main', 'storyboard')
-        const expressionId = stableId(expression.id ?? expression.client_id ?? `${momentId}_${writtenPaths.length + 1}`, 'writing_expression')
-        const expressionPath = `${momentDir}/storyboards/${slugId(writingExpressionStoryboardId, 'storyboard')}/writing_expressions/${expressionId}/writing_expression.json`
+      for (const audioCue of moment.audio_cues ?? []) {
+        const audioCueId = stableId(audioCue.id ?? audioCue.client_id ?? `${momentId}_${writtenPaths.length + 1}`, 'audio_cue')
+        const audioCuePath = `${momentDir}/audio_cues/${slugId(audioCueId, 'audio_cue')}/audio_cue.json`
+        const existingAudioCue = await readOptionalRecord(input.fileRepository, audioCuePath)
+        await writeRecord(input.fileRepository, audioCuePath, pruneUndefined({
+          ...stripWorkspacePrivateFields(existingAudioCue),
+          schema: 'movscript.audio_cue.v1',
+          kind: 'audio_cue',
+          id: audioCueId,
+          title: stringValue(audioCue.title ?? existingAudioCue.title) ?? `Audio Cue ${displayId(audioCueId, 'audio_cue')}`,
+          cue_kind: normalizeAudioCueKind(audioCue.cue_kind ?? audioCue.kind ?? existingAudioCue.cue_kind),
+          order: finiteNumber(audioCue.order) ?? finiteNumber(existingAudioCue.order),
+          scope_ref: momentDir,
+          storyboard_ref: normalizeStoryboardRef(momentDir, audioCue.storyboard_ref ?? existingAudioCue.storyboard_ref, audioCue.storyboard_id),
+          shot_plan_id: stringValue(audioCue.shot_plan_id ?? existingAudioCue.shot_plan_id),
+          timing: isRecord(audioCue.timing) ? audioCue.timing : (isRecord(existingAudioCue.timing) ? existingAudioCue.timing : undefined),
+          prompt_hint: stringValue(audioCue.prompt_hint ?? existingAudioCue.prompt_hint),
+          asset_refs: Array.isArray(audioCue.asset_refs) ? audioCue.asset_refs.filter(isString) : existingAudioCue.asset_refs,
+          ...(audioCue.__delete === true ? { __delete: true } : {}),
+        }))
+        writtenPaths.push(audioCuePath)
+      }
+
+      for (const expression of moment.expression_units ?? []) {
+        const expressionId = stableId(expression.id ?? expression.client_id ?? `${momentId}_${writtenPaths.length + 1}`, 'expression_unit')
+        const expressionPath = `${momentDir}/expression_units/${slugId(expressionId, 'expression_unit')}/expression_unit.json`
         const existingExpression = await readOptionalRecord(input.fileRepository, expressionPath)
         await writeRecord(input.fileRepository, expressionPath, pruneUndefined({
           ...stripWorkspacePrivateFields(existingExpression),
-          schema: 'movscript.writing_expression.v1',
-          kind: 'writing_expression',
+          schema: 'movscript.expression_unit.v1',
+          kind: 'expression_unit',
           id: expressionId,
-          title: stringValue(existingExpression.title) ?? stringValue(expression.text) ?? `Writing Expression ${displayId(expressionId, 'writing_expression')}`,
+          title: stringValue(existingExpression.title) ?? stringValue(expression.text) ?? `Expression Unit ${displayId(expressionId, 'expression_unit')}`,
           expression_kind: normalizeExpressionKind(expression.kind ?? existingExpression.expression_kind),
           speaker: stringValue(expression.speaker ?? existingExpression.speaker),
           text: stringValue(expression.text ?? existingExpression.text) ?? '',
           note: stringValue(expression.note ?? existingExpression.note),
           intent: stringValue(expression.intent ?? existingExpression.intent),
           order: finiteNumber(expression.order) ?? finiteNumber(existingExpression.order),
-          target_ref: momentPath,
+          span: isRecord(expression.span) ? expression.span : (isRecord(existingExpression.span) ? existingExpression.span : undefined),
           script_block_id: nullableRef(expression.script_block_id ?? existingExpression.script_block_id, 'script_block'),
           ...(expression.__delete === true ? { __delete: true } : {}),
         }))
@@ -236,40 +302,53 @@ function normalizeExpressionKind(value: unknown): string {
   return 'dialogue'
 }
 
-function firstExistingStoryboardTimingId(record: Record<string, unknown>): string | undefined {
+function normalizeTransition(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined
+  return pruneUndefined({
+    in: stringValue(value.in),
+    out: stringValue(value.out),
+    notes: stringValue(value.notes),
+  })
+}
+
+function normalizeTimeline(
+  value: unknown,
+  fallback: unknown,
+  legacyTiming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const source = isRecord(value) ? value : (isRecord(fallback) ? fallback : {})
+  const timeline = pruneUndefined({
+    gap_after_sec: finiteNumber(source.gap_after_sec) ?? finiteNumber(legacyTiming?.gap_after_sec),
+    caption: stringValue(source.caption) ?? stringValue(legacyTiming?.caption),
+    duration_sec: finiteNumber(source.duration_sec),
+  })
+  return Object.keys(timeline).length ? timeline : undefined
+}
+
+function normalizeAudioCueKind(value: unknown): string {
+  const kind = stringValue(value)
+  if (kind === 'sound_effect' || kind === 'music' || kind === 'ambience' || kind === 'dialogue' || kind === 'foley' || kind === 'other') return kind
+  if (kind === 'sound') return 'sound_effect'
+  if (kind === 'music_beat') return 'music'
+  return 'sound_effect'
+}
+
+function normalizeStoryboardRef(momentDir: string, value: unknown, storyboardId: unknown): string | undefined {
+  const ref = stringValue(value)
+  if (ref) return ref
+  const id = storyboardId === undefined ? undefined : stableId(storyboardId, 'storyboard')
+  return id ? `${momentDir}/storyboards/${slugId(id, 'storyboard')}` : undefined
+}
+
+function legacyStoryboardTimingTransition(record: Record<string, unknown>): unknown {
+  const timing = isRecord(record.storyboard_timing) ? record.storyboard_timing : undefined
+  return timing?.transition
+}
+
+function legacyStoryboardTimingItem(record: Record<string, unknown>, storyboardId: string): Record<string, unknown> | undefined {
   const timing = isRecord(record.storyboard_timing) ? record.storyboard_timing : undefined
   const items = Array.isArray(timing?.items) ? timing.items.filter(isRecord) : []
-  return stringValue(items[0]?.storyboard_id)
-}
-
-function buildStoryboardTiming(storyboards: MovScriptProductionWorkspaceStoryboardNode[]): Record<string, unknown> {
-  return { items: storyboards.map((storyboard, index) => ({
-    storyboard_id: stableId(storyboard.id ?? storyboard.client_id ?? index + 1, 'storyboard'),
-    order: finiteNumber(storyboard.order) ?? index + 1,
-  })) }
-}
-
-function mergeStoryboardTiming(
-  record: Record<string, unknown>,
-  storyboards: MovScriptProductionWorkspaceStoryboardNode[],
-): Record<string, unknown> {
-  const current = isRecord(record.storyboard_timing) ? record.storyboard_timing : {}
-  const currentItems = Array.isArray(current.items) ? current.items.filter(isRecord) : []
-  const nextItems = [...currentItems]
-  const existingIds = new Set(currentItems.map((item) => stringValue(item.storyboard_id)).filter(isString))
-  let nextOrder = Math.max(0, ...currentItems.map((item) => finiteNumber(item.order) ?? 0))
-  for (const storyboard of storyboards) {
-    const storyboardId = stableId(storyboard.id ?? storyboard.client_id ?? nextOrder + 1, 'storyboard')
-    if (existingIds.has(storyboardId)) continue
-    const order = finiteNumber(storyboard.order) ?? nextOrder + 1
-    nextOrder = Math.max(nextOrder, order)
-    nextItems.push({ storyboard_id: storyboardId, order })
-    existingIds.add(storyboardId)
-  }
-  return pruneUndefined({
-    ...current,
-    items: nextItems.length ? nextItems : buildStoryboardTiming(storyboards).items,
-  })
+  return items.find((item) => stringValue(item.storyboard_id) === storyboardId)
 }
 
 async function readRecord(fileRepository: MovScriptWorkspaceFileRepository, path: string): Promise<Record<string, unknown>> {

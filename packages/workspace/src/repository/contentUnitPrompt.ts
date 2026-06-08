@@ -1,35 +1,37 @@
 import type { MovScriptWorkspaceFileRepository } from './types.js'
 
-export interface MovScriptContentUnitEditablePrompt {
-  prompt?: string
-  negative_prompt?: string
+export interface MovScriptContentUnitEditPrompt {
+  text?: string
+  negative_text?: string
   notes?: string
+  structured?: Record<string, unknown>
 }
 
-export interface MovScriptContentUnitEditablePromptUpdateInput {
+export interface MovScriptContentUnitEditPromptUpdateInput {
   fileRepository: MovScriptWorkspaceFileRepository
   targetPath: string
-  editablePrompt: MovScriptContentUnitEditablePrompt
+  editPrompt: MovScriptContentUnitEditPrompt
 }
 
-export interface MovScriptContentUnitEditablePromptUpdateResult {
+export interface MovScriptContentUnitEditPromptUpdateResult {
   path: string
   record: Record<string, unknown>
 }
 
-export async function updateMovScriptContentUnitEditablePrompt(
-  input: MovScriptContentUnitEditablePromptUpdateInput,
-): Promise<MovScriptContentUnitEditablePromptUpdateResult> {
+export async function updateMovScriptContentUnitEditPrompt(
+  input: MovScriptContentUnitEditPromptUpdateInput,
+): Promise<MovScriptContentUnitEditPromptUpdateResult> {
   const targetPath = normalizeWorkspacePath(input.targetPath)
   const current = await readContentUnitRecord(input.fileRepository, targetPath)
-  const editablePrompt = pruneUndefined({
-    prompt: stringValue(input.editablePrompt.prompt),
-    negative_prompt: stringValue(input.editablePrompt.negative_prompt),
-    notes: stringValue(input.editablePrompt.notes),
+  const editPrompt = pruneUndefined({
+    text: stringValue(input.editPrompt.text),
+    negative_text: stringValue(input.editPrompt.negative_text),
+    notes: stringValue(input.editPrompt.notes),
+    structured: isRecord(input.editPrompt.structured) ? input.editPrompt.structured : undefined,
   })
   const record = {
     ...current,
-    editable_prompt: editablePrompt,
+    edit_prompt: editPrompt,
   }
   await input.fileRepository.write({ path: targetPath, content: serializeWorkspaceRecord(record) })
   return { path: targetPath, record }

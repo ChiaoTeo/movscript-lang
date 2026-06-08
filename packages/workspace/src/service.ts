@@ -27,26 +27,33 @@ import {
   appendMovScriptInlineCandidate,
   createMovScriptWorkspaceAssetSlotCandidate,
   createMovScriptWorkspaceKeyframeCandidate,
+  createMovScriptContentCandidate,
   createMovScriptWorkspaceDomainRepository,
   deleteMovScriptWorkspaceEntity,
+  selectMovScriptContentUnitCandidate,
   selectMovScriptInlineCandidate,
   snapshotMovScriptVersionFromMarkdown,
   unlockMovScriptInlineCandidate,
   updateMovScriptInlineCandidate,
-  updateMovScriptContentUnitEditablePrompt,
+  updateMovScriptContentUnitEditPrompt,
   upsertMovScriptContentUnit,
   upsertMovScriptProjectStandards,
-  updateMovScriptSceneMomentStoryboardTiming,
+  updateMovScriptEntityTransition,
   updateMovScriptStoryboardShotPlans,
+  updateMovScriptStoryboardTimeline,
   upsertMovScriptWorkspaceScript,
   readMovScriptWorkspaceScriptSource,
   upsertMovScriptWorkspaceAsset,
   upsertMovScriptWorkspaceSetting,
   saveMovScriptProductionWorkspaceSnapshot,
-  type MovScriptContentUnitEditablePromptUpdateInput,
-  type MovScriptContentUnitEditablePromptUpdateResult,
+  type MovScriptContentUnitEditPromptUpdateInput,
+  type MovScriptContentUnitEditPromptUpdateResult,
   type MovScriptContentUnitWriteInput,
   type MovScriptContentUnitWriteResult,
+  type MovScriptContentCandidateWriteInput,
+  type MovScriptContentCandidateWriteResult,
+  type MovScriptContentUnitSelectionInput,
+  type MovScriptContentUnitSelectionResult,
   type MovScriptProjectStandardsWriteInput,
   type MovScriptProjectStandardsWriteResult,
   type MovScriptWorkspaceEntityDeleteInput,
@@ -66,10 +73,12 @@ import {
   type MovScriptWorkspaceCandidateWriteResult,
   type MovScriptScriptVersionSnapshotInput,
   type MovScriptScriptVersionSnapshotResult,
+  type MovScriptEntityTransitionUpdateInput,
+  type MovScriptEntityTransitionUpdateResult,
   type MovScriptShotPlanUpdateInput,
   type MovScriptShotPlanUpdateResult,
-  type MovScriptStoryboardTimingUpdateInput,
-  type MovScriptStoryboardTimingUpdateResult,
+  type MovScriptStoryboardTimelineUpdateInput,
+  type MovScriptStoryboardTimelineUpdateResult,
   type MovScriptWorkspaceFileRepository,
 } from './repository/index.js'
 
@@ -80,7 +89,6 @@ export interface MovScriptWorkspaceServiceOptions {
 
 export interface MovScriptWorkspaceInitializeInput {
   projectId?: string
-  projectName?: string
   title?: string
   language?: string
   standards?: Record<string, unknown>
@@ -95,7 +103,6 @@ export interface MovScriptWorkspaceInitializeFileResult {
 
 export interface MovScriptWorkspaceInitializeResult {
   projectId: string
-  projectName: string
   files: MovScriptWorkspaceInitializeFileResult[]
 }
 
@@ -109,7 +116,10 @@ export interface MovScriptWorkspaceService {
   queryProductionContext(query?: MovScriptWorkspaceProductionContextQuery): Promise<Record<string, MovScriptWorkspaceIndexedEntity[]>>
   readEditorState(): Promise<Record<string, unknown> | undefined>
   readPreviewTimeline(productionId: string | number): Promise<Record<string, unknown> | undefined>
-  readContentGenerationPrompt(contentUnitId: string | number): Promise<Record<string, unknown> | undefined>
+  readContentUnitRuntimePanel(contentUnitId: string | number): Promise<Record<string, unknown> | undefined>
+  readContentUnitInputVersion(contentUnitId: string | number): Promise<Record<string, unknown> | undefined>
+  readContentUnitDependencyReport(contentUnitId: string | number): Promise<Record<string, unknown> | undefined>
+  readContentUnitSelectionValidity(contentUnitId: string | number): Promise<Record<string, unknown> | undefined>
   upsertSetting(input: Omit<MovScriptWorkspaceEntityWriteInput, 'fileRepository'>): Promise<MovScriptWorkspaceEntityWriteResult>
   upsertAsset(input: Omit<MovScriptWorkspaceEntityWriteInput, 'fileRepository'>): Promise<MovScriptWorkspaceEntityWriteResult>
   upsertScript(input: Omit<MovScriptWorkspaceScriptWriteInput, 'fileRepository'>): Promise<MovScriptWorkspaceScriptWriteResult>
@@ -121,22 +131,31 @@ export interface MovScriptWorkspaceService {
   snapshotScriptVersionFromMarkdown(
     input: Omit<MovScriptScriptVersionSnapshotInput, 'fileRepository'>,
   ): Promise<MovScriptScriptVersionSnapshotResult>
-  updateContentUnitEditablePrompt(
-    input: Omit<MovScriptContentUnitEditablePromptUpdateInput, 'fileRepository'>,
-  ): Promise<MovScriptContentUnitEditablePromptUpdateResult>
+  updateContentUnitEditPrompt(
+    input: Omit<MovScriptContentUnitEditPromptUpdateInput, 'fileRepository'>,
+  ): Promise<MovScriptContentUnitEditPromptUpdateResult>
   upsertContentUnit(input: Omit<MovScriptContentUnitWriteInput, 'fileRepository'>): Promise<MovScriptContentUnitWriteResult>
   upsertProjectStandards(
     input: Omit<MovScriptProjectStandardsWriteInput, 'fileRepository'>,
   ): Promise<MovScriptProjectStandardsWriteResult>
-  updateSceneMomentStoryboardTiming(
-    input: Omit<MovScriptStoryboardTimingUpdateInput, 'fileRepository'>,
-  ): Promise<MovScriptStoryboardTimingUpdateResult>
+  updateEntityTransition(
+    input: Omit<MovScriptEntityTransitionUpdateInput, 'fileRepository'>,
+  ): Promise<MovScriptEntityTransitionUpdateResult>
+  updateStoryboardTimeline(
+    input: Omit<MovScriptStoryboardTimelineUpdateInput, 'fileRepository'>,
+  ): Promise<MovScriptStoryboardTimelineUpdateResult>
   updateStoryboardShotPlans(
     input: Omit<MovScriptShotPlanUpdateInput, 'fileRepository'>,
   ): Promise<MovScriptShotPlanUpdateResult>
   appendCandidate(
     input: Omit<MovScriptInlineCandidateWriteInput, 'fileRepository'>,
   ): Promise<MovScriptInlineCandidateWriteResult>
+  createContentCandidate(
+    input: Omit<MovScriptContentCandidateWriteInput, 'fileRepository'>,
+  ): Promise<MovScriptContentCandidateWriteResult>
+  selectContentUnitCandidate(
+    input: Omit<MovScriptContentUnitSelectionInput, 'fileRepository'>,
+  ): Promise<MovScriptContentUnitSelectionResult>
   createAssetSlotCandidate(
     input: Omit<MovScriptWorkspaceCandidateWriteInput, 'fileRepository' | 'projectPath'> & { projectPath?: string },
   ): Promise<MovScriptWorkspaceCandidateWriteResult>
@@ -167,11 +186,11 @@ export function createMovScriptWorkspaceService(
       const now = options.now?.() ?? new Date()
       const createdAt = now.toISOString()
       const title = stringField(input.title) ?? 'MovScript Project'
-      const projectId = stringField(input.projectId ?? input.projectName) ?? title
+      const projectId = stringField(input.projectId) ?? title
       const files = [
         await writeJSONDocument(options.fileRepository, 'workspace.json', {
           schema: 'movscript.workspace.v1',
-          project_name: projectId,
+          project_id: projectId,
           title,
           created_at: createdAt,
           updated_at: createdAt,
@@ -195,7 +214,7 @@ export function createMovScriptWorkspaceService(
           updated_at: createdAt,
         }, Boolean(input.overwrite)),
       ]
-      return { projectId, projectName: projectId, files }
+      return { projectId, files }
     },
     getModel: getMovScriptWorkspaceModel,
     loadIndex,
@@ -217,8 +236,17 @@ export function createMovScriptWorkspaceService(
     readPreviewTimeline(productionId) {
       return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/productions/${entityPathSlug(productionId, 'production')}/preview_timeline.json`)
     },
-    readContentGenerationPrompt(contentUnitId) {
-      return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/generation_prompt.json`)
+    readContentUnitRuntimePanel(contentUnitId) {
+      return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/runtime_panel.json`)
+    },
+    readContentUnitInputVersion(contentUnitId) {
+      return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/input_version.json`)
+    },
+    readContentUnitDependencyReport(contentUnitId) {
+      return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/dependency_report.json`)
+    },
+    readContentUnitSelectionValidity(contentUnitId) {
+      return readJSONArtifact(options.fileRepository, `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/selection_validity.json`)
     },
     upsertSetting(input) {
       return upsertMovScriptWorkspaceSetting({
@@ -266,8 +294,8 @@ export function createMovScriptWorkspaceService(
         ...input,
       })
     },
-    updateContentUnitEditablePrompt(input) {
-      return updateMovScriptContentUnitEditablePrompt({
+    updateContentUnitEditPrompt(input) {
+      return updateMovScriptContentUnitEditPrompt({
         fileRepository: options.fileRepository,
         ...input,
       })
@@ -285,8 +313,14 @@ export function createMovScriptWorkspaceService(
         ...input,
       })
     },
-    updateSceneMomentStoryboardTiming(input) {
-      return updateMovScriptSceneMomentStoryboardTiming({
+    updateEntityTransition(input) {
+      return updateMovScriptEntityTransition({
+        fileRepository: options.fileRepository,
+        ...input,
+      })
+    },
+    updateStoryboardTimeline(input) {
+      return updateMovScriptStoryboardTimeline({
         fileRepository: options.fileRepository,
         ...input,
       })
@@ -299,6 +333,18 @@ export function createMovScriptWorkspaceService(
     },
     appendCandidate(input) {
       return appendMovScriptInlineCandidate({
+        fileRepository: options.fileRepository,
+        ...input,
+      })
+    },
+    createContentCandidate(input) {
+      return createMovScriptContentCandidate({
+        fileRepository: options.fileRepository,
+        ...input,
+      })
+    },
+    selectContentUnitCandidate(input) {
+      return selectMovScriptContentUnitCandidate({
         fileRepository: options.fileRepository,
         ...input,
       })

@@ -84,7 +84,8 @@ export function defaultMovScriptWorkspaceRootManifest(now = new Date()): MovScri
   const timestamp = now.toISOString()
   return {
     schema: MOVSCRIPT_WORKSPACE_MANIFEST_SCHEMA,
-    projectName: 'MovScript Project',
+    project_id: 'movscript_project',
+    title: 'MovScript Project',
     createdAt: timestamp,
     updatedAt: timestamp,
     layout: {
@@ -98,11 +99,13 @@ export function defaultMovScriptWorkspaceRootManifest(now = new Date()): MovScri
 export function readMovScriptWorkspaceRootManifest(manifestPath: string): MovScriptWorkspaceRootManifest | undefined {
   const parsed = readJSON(manifestPath)
   if (!isRecord(parsed) || parsed.schema !== MOVSCRIPT_WORKSPACE_MANIFEST_SCHEMA) return undefined
-  const projectName = stringField(parsed.projectName ?? parsed.workspaceId)
-  if (!projectName) return undefined
+  const projectId = stringField(parsed.project_id)
+  const title = stringField(parsed.title)
+  if (!projectId || !title) return undefined
   return {
     schema: MOVSCRIPT_WORKSPACE_MANIFEST_SCHEMA,
-    projectName,
+    project_id: projectId,
+    title,
     createdAt: stringField(parsed.createdAt) ?? new Date().toISOString(),
     updatedAt: stringField(parsed.updatedAt) ?? new Date().toISOString(),
     layout: normalizeWorkspaceLayout(parsed.layout),

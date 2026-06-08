@@ -14,7 +14,8 @@ export const SEMANTIC_ENTITY_KINDS = [
   'segment',
   'scene_moment',
   'storyboard',
-  'writing_expression',
+  'audio_cue',
+  'expression_unit',
   'content_unit',
   'keyframe',
   'setting',
@@ -80,7 +81,7 @@ export interface MovScriptWorkspaceProductionContextQuery {
   storyboardId?: string | number
   contentUnitId?: string | number
   query?: string
-  include?: Array<'productions' | 'segments' | 'scene_moments' | 'storyboards' | 'writing_expressions' | 'content_units' | 'keyframes'>
+  include?: Array<'productions' | 'segments' | 'scene_moments' | 'storyboards' | 'audio_cues' | 'expression_units' | 'content_units' | 'keyframes'>
   limit?: number
 }
 
@@ -104,7 +105,7 @@ export function queryMovScriptWorkspaceEntities(
     if (query.productionId !== undefined && !entityPathMatchesProduction(entity.path, query.productionId)) return false
     if (query.segmentId !== undefined && !entityPathMatchesSegment(entity.path, query.segmentId)) return false
     if (query.sceneMomentId !== undefined && !entityPathMatchesSceneMoment(entity.path, query.sceneMomentId)) return false
-    if (query.storyboardId !== undefined && !entityPathMatchesStoryboard(entity.path, query.storyboardId)) return false
+    if (query.storyboardId !== undefined && !entityMatchesStoryboard(entity, query.storyboardId)) return false
     if (query.contentUnitId !== undefined && !entityPathMatchesContentUnit(entity.path, query.contentUnitId)) return false
     if (query.settingId !== undefined && !entityPathMatchesSetting(entity.path, query.settingId)) return false
     if (query.settingStateId !== undefined && !entityPathMatchesSettingState(entity.path, query.settingStateId)) return false
@@ -162,7 +163,7 @@ export function queryMovScriptWorkspaceProductionContext(
   index: MovScriptWorkspaceDomainIndex,
   query: MovScriptWorkspaceProductionContextQuery = {},
 ): Record<string, MovScriptWorkspaceIndexedEntity[]> {
-  const include = new Set(query.include ?? ['productions', 'segments', 'scene_moments', 'storyboards', 'writing_expressions', 'content_units', 'keyframes'])
+  const include = new Set(query.include ?? ['productions', 'segments', 'scene_moments', 'storyboards', 'audio_cues', 'expression_units', 'content_units', 'keyframes'])
   const result: Record<string, MovScriptWorkspaceIndexedEntity[]> = {}
   if (include.has('productions')) {
     result.productions = queryMovScriptWorkspaceEntities(index, {
@@ -198,13 +199,23 @@ export function queryMovScriptWorkspaceProductionContext(
       limit: query.limit,
     }).filter((entity) => query.storyboardId === undefined || sameId(entity.id, query.storyboardId))
   }
-  if (include.has('writing_expressions')) {
-    result.writing_expressions = queryMovScriptWorkspaceEntities(index, {
-      entityKind: 'writing_expression',
+  if (include.has('audio_cues')) {
+    result.audio_cues = queryMovScriptWorkspaceEntities(index, {
+      entityKind: 'audio_cue',
       productionId: query.productionId,
       segmentId: query.segmentId,
       sceneMomentId: query.sceneMomentId,
       storyboardId: query.storyboardId,
+      query: query.query,
+      limit: query.limit,
+    })
+  }
+  if (include.has('expression_units')) {
+    result.expression_units = queryMovScriptWorkspaceEntities(index, {
+      entityKind: 'expression_unit',
+      productionId: query.productionId,
+      segmentId: query.segmentId,
+      sceneMomentId: query.sceneMomentId,
       query: query.query,
       limit: query.limit,
     })
@@ -277,7 +288,8 @@ function entityKindFromPath(path: string): SemanticEntityKind | undefined {
   if (name === 'segment.json') return 'segment'
   if (name === 'scene_moment.json') return 'scene_moment'
   if (name === 'storyboard.json') return 'storyboard'
-  if (name === 'writing_expression.json') return 'writing_expression'
+  if (name === 'audio_cue.json') return 'audio_cue'
+  if (name === 'expression_unit.json') return 'expression_unit'
   if (name === 'content_unit.json') return 'content_unit'
   if (name === 'keyframe.json') return 'keyframe'
   return undefined
@@ -293,7 +305,8 @@ const schemaEntityKinds: Record<string, SemanticEntityKind> = {
   segment: 'segment',
   scene_moment: 'scene_moment',
   storyboard: 'storyboard',
-  writing_expression: 'writing_expression',
+  audio_cue: 'audio_cue',
+  expression_unit: 'expression_unit',
   content_unit: 'content_unit',
   keyframe: 'keyframe',
   setting: 'setting',
@@ -315,6 +328,12 @@ function entityPathMatchesSceneMoment(path: string, sceneMomentId: string | numb
 
 function entityPathMatchesStoryboard(path: string, storyboardId: string | number): boolean {
   return pathSegmentAfter(path, 'storyboards') !== undefined && sameEntityRef(pathSegmentAfter(path, 'storyboards'), storyboardId, 'storyboard')
+}
+
+function entityMatchesStoryboard(entity: MovScriptWorkspaceIndexedEntity, storyboardId: string | number): boolean {
+  if (entityPathMatchesStoryboard(entity.path, storyboardId)) return true
+  const storyboardRef = stringField(entity.record.storyboard_ref)
+  return storyboardRef !== undefined && entityPathMatchesStoryboard(storyboardRef, storyboardId)
 }
 
 function entityPathMatchesContentUnit(path: string, contentUnitId: string | number): boolean {
@@ -344,10 +363,11 @@ function recordKindMatches(record: Record<string, unknown>, kind: string): boole
   return [
     record.kind,
     record.setting_kind,
-    record.unit_kind,
+    record.content_unit_type,
     record.asset_kind,
     record.segment_kind,
     record.expression_kind,
+    record.cue_kind,
   ].some((value) => stringField(value) === kind)
 }
 

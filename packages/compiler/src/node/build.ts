@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import {
   buildMovScriptWorkspaceBuildArtifacts,
+  type MovScriptDomainEntityRef,
+  type MovScriptImpactReportArtifact,
   type MovScriptWorkspaceBuildArtifacts,
 } from '../artifacts/index.js'
 import {
@@ -78,6 +80,15 @@ export interface MovScriptWorkspaceReviewResult {
   }
 }
 
+export interface MovScriptWorkspaceInspectionResult extends Omit<MovScriptWorkspaceReviewResult, 'schema' | 'operation'> {
+  schema: 'movscript.workspace-inspection.v1'
+  operation: 'inspect'
+  reviewAlias: {
+    schema: MovScriptWorkspaceReviewResult['schema']
+    operation: MovScriptWorkspaceReviewResult['operation']
+  }
+}
+
 export interface MovScriptWorkspaceBuildManifest {
   schema: 'movscript.workspace-build.v1'
   buildId: string
@@ -97,6 +108,80 @@ export interface MovScriptWorkspaceBuildManifest {
     impactReportPath: string
   }
   review: MovScriptWorkspaceReviewResult
+}
+
+export interface MovScriptWorkspaceRegenerationTarget {
+  contentUnitId?: string | number
+  contentUnitPath?: string
+  reasons: string[]
+  selected?: boolean
+  stale?: boolean
+  candidateId?: string | number
+  resourceId?: string | number
+  currentInputHash?: string
+  acceptedInputHash?: string
+}
+
+export interface MovScriptWorkspaceRegenerationPlanResult {
+  schema: 'movscript.workspace-regeneration-plan.v1'
+  operation: 'regen-plan'
+  createdAt: string
+  status: 'ready' | 'no_build'
+  build?: {
+    buildId: string
+    builtAt: string
+    manifestPath: string
+    impactReportPath?: string
+  }
+  changedEntities: MovScriptImpactReportArtifact['changedEntities']
+  affectedContentUnits: MovScriptWorkspaceRegenerationTarget[]
+  promptBundles: Array<{
+    contentUnitId?: string | number
+    contentUnitPath?: string
+    reasons: string[]
+  }>
+  previewTimelines: Array<{
+    productionId?: string | number
+    path?: string
+    reasons: string[]
+  }>
+  summary: {
+    changedEntities: number
+    affectedContentUnits: number
+    staleContentUnits: number
+    promptBundles: number
+    previewTimelines: number
+  }
+}
+
+export interface MovScriptWorkspaceOverviewResult {
+  schema: 'movscript.workspace-overview.v1'
+  operation: 'overview'
+  createdAt: string
+  workspace: {
+    projectId?: string | number
+    title?: string
+    sourcePath: string
+  }
+  source: {
+    mode: 'source'
+    documentCount: number
+    entityCount: number
+    issueCount: number
+    hasPendingEdits: boolean
+    readyToCompile: boolean
+  }
+  build: {
+    status: 'missing' | 'current' | 'stale'
+    lastBuildId?: string
+    lastBuiltAt?: string
+    currentIsStale: boolean
+  }
+  changes: MovScriptWorkspaceInspectionResult['summary'] & {
+    affectedEntityKinds: string[]
+  }
+  regeneration: MovScriptWorkspaceRegenerationPlanResult['summary']
+  nextActions: string[]
 }
 
 export interface MovScriptWorkspaceBuildResult {
@@ -164,6 +249,63 @@ export async function reviewMovScriptBuildWorkspace(input: MovScriptWorkspaceBui
     issues,
     readyToBuild: summary.errors === 0,
     summary,
+  }
+}
+
+export async function inspectMovScriptWorkspace(input: MovScriptWorkspaceBuildInput): Promise<MovScriptWorkspaceInspectionResult> {
+  const review = await reviewMovScriptBuildWorkspace(input)
+  return {
+    ...review,
+    schema: 'movscript.workspace-inspection.v1',
+    operation: 'inspect',
+    reviewAlias: {
+      schema: 'movscript.workspace-review.v1',
+      operation: 'review',
+    },
+  }
+}
+
+export async function overviewMovScriptWorkspace(input: MovScriptWorkspaceBuildInput): Promise<MovScriptWorkspaceOverviewResult> {
+  const now = input.now ?? new Date()
+  const inspection = await inspectMovScriptWorkspace({ ...input, now })
+  const source = await resolveWorkspaceSource(input.fileRepository)
+  const latestBuild = await loadLatestBuildManifest(input.fileRepository)
+  const regeneration = await planMovScriptWorkspaceRegeneration({ ...input, now })
+  const project = projectInfoFromSource(source)
+  const affectedEntityKinds = [...new Set(inspection.changedEntities.map((entity) => entity.entityKind))].sort()
+  const buildStatus = !latestBuild
+    ? 'missing'
+    : inspection.summary.total > 0
+      ? 'stale'
+      : 'current'
+  return {
+    schema: 'movscript.workspace-overview.v1',
+    operation: 'overview',
+    createdAt: now.toISOString(),
+    workspace: {
+      ...(project.projectId !== undefined ? { projectId: project.projectId } : {}),
+      ...(project.title !== undefined ? { title: project.title } : {}),
+      sourcePath: source.rootPath,
+    },
+    source: {
+      mode: source.mode,
+      documentCount: source.files.length,
+      entityCount: source.files.filter((file) => sourceEntityKindFromRelativePath(file.relativePath) !== undefined).length,
+      issueCount: inspection.issues.length,
+      hasPendingEdits: inspection.summary.total > 0,
+      readyToCompile: inspection.readyToBuild,
+    },
+    build: {
+      status: buildStatus,
+      ...(latestBuild ? { lastBuildId: latestBuild.manifest.buildId, lastBuiltAt: latestBuild.manifest.builtAt } : {}),
+      currentIsStale: buildStatus !== 'current',
+    },
+    changes: {
+      ...inspection.summary,
+      affectedEntityKinds,
+    },
+    regeneration: regeneration.summary,
+    nextActions: nextActionsForOverview(inspection, regeneration, buildStatus),
   }
 }
 
@@ -242,13 +384,33 @@ export async function buildMovScriptWorkspace(input: MovScriptWorkspaceBuildInpu
       content: `${JSON.stringify(previewTimeline, null, 2)}\n`,
     })
   }
-  await deleteStaleBuildArtifacts(input.fileRepository, artifacts.contentGenerationPrompts.map((prompt) => {
-    return `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(prompt.contentUnitId, 'content_unit')}/generation_prompt.json`
-  }), isContentGenerationPromptBuildArtifact)
-  for (const prompt of artifacts.contentGenerationPrompts) {
+  const contentUnitArtifactPaths = artifacts.contentUnitArtifacts.flatMap((artifact) => {
+    const dir = `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(artifact.contentUnitId, 'content_unit')}`
+    return [
+      `${dir}/runtime_panel.json`,
+      `${dir}/input_version.json`,
+      `${dir}/dependency_report.json`,
+      `${dir}/selection_validity.json`,
+    ]
+  })
+  await deleteStaleBuildArtifacts(input.fileRepository, contentUnitArtifactPaths, isContentUnitBuildArtifact)
+  for (const artifact of artifacts.contentUnitArtifacts) {
+    const dir = `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(artifact.contentUnitId, 'content_unit')}`
     await input.fileRepository.write({
-      path: `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(prompt.contentUnitId, 'content_unit')}/generation_prompt.json`,
-      content: `${JSON.stringify(prompt, null, 2)}\n`,
+      path: `${dir}/runtime_panel.json`,
+      content: `${JSON.stringify(artifact.runtimePanel, null, 2)}\n`,
+    })
+    await input.fileRepository.write({
+      path: `${dir}/input_version.json`,
+      content: `${JSON.stringify(artifact.inputVersion, null, 2)}\n`,
+    })
+    await input.fileRepository.write({
+      path: `${dir}/dependency_report.json`,
+      content: `${JSON.stringify(artifact.dependencyReport, null, 2)}\n`,
+    })
+    await input.fileRepository.write({
+      path: `${dir}/selection_validity.json`,
+      content: `${JSON.stringify(artifact.selectionValidity, null, 2)}\n`,
     })
   }
   await input.fileRepository.write({
@@ -282,6 +444,66 @@ export async function buildMovScriptWorkspace(input: MovScriptWorkspaceBuildInpu
   }
 }
 
+export async function planMovScriptWorkspaceRegeneration(input: MovScriptWorkspaceBuildInput): Promise<MovScriptWorkspaceRegenerationPlanResult> {
+  const now = input.now ?? new Date()
+  const latestBuild = await loadLatestBuildManifest(input.fileRepository)
+  if (!latestBuild) {
+    return {
+      schema: 'movscript.workspace-regeneration-plan.v1',
+      operation: 'regen-plan',
+      createdAt: now.toISOString(),
+      status: 'no_build',
+      changedEntities: [],
+      affectedContentUnits: [],
+      promptBundles: [],
+      previewTimelines: [],
+      summary: {
+        changedEntities: 0,
+        affectedContentUnits: 0,
+        staleContentUnits: 0,
+        promptBundles: 0,
+        previewTimelines: 0,
+      },
+    }
+  }
+  const impactReport = await readJsonFile<MovScriptImpactReportArtifact>(
+    input.fileRepository,
+    latestBuild.manifest.output.impactReportPath,
+  )
+  const changedEntities = impactReport?.changedEntities ?? []
+  const selectionValidity = await loadContentUnitSelectionValidity(input.fileRepository)
+  const affectedContentUnits = affectedContentUnitTargets(changedEntities, selectionValidity)
+  const promptBundles = affectedContentUnits.map((target) => ({
+    ...(target.contentUnitId !== undefined ? { contentUnitId: target.contentUnitId } : {}),
+    ...(target.contentUnitPath !== undefined ? { contentUnitPath: target.contentUnitPath } : {}),
+    reasons: target.reasons,
+  }))
+  const previewTimelines = previewTimelineTargets(changedEntities)
+  return {
+    schema: 'movscript.workspace-regeneration-plan.v1',
+    operation: 'regen-plan',
+    createdAt: now.toISOString(),
+    status: 'ready',
+    build: {
+      buildId: latestBuild.manifest.buildId,
+      builtAt: latestBuild.manifest.builtAt,
+      manifestPath: latestBuild.path,
+      impactReportPath: latestBuild.manifest.output.impactReportPath,
+    },
+    changedEntities,
+    affectedContentUnits,
+    promptBundles,
+    previewTimelines,
+    summary: {
+      changedEntities: changedEntities.length,
+      affectedContentUnits: affectedContentUnits.length,
+      staleContentUnits: affectedContentUnits.filter((target) => target.stale).length,
+      promptBundles: promptBundles.length,
+      previewTimelines: previewTimelines.length,
+    },
+  }
+}
+
 async function loadWorkspaceFileSnapshots(
   fileRepository: MovScriptWorkspaceFileRepository,
   rootPath: string,
@@ -309,8 +531,13 @@ function isPreviewTimelineBuildArtifact(relativePath: string): boolean {
   return relativePath.startsWith('productions/') && relativePath.endsWith('/preview_timeline.json')
 }
 
-function isContentGenerationPromptBuildArtifact(relativePath: string): boolean {
-  return relativePath.startsWith('content_units/') && relativePath.endsWith('/generation_prompt.json')
+function isContentUnitBuildArtifact(relativePath: string): boolean {
+  return relativePath.startsWith('content_units/')
+    && (relativePath.endsWith('/runtime_panel.json')
+      || relativePath.endsWith('/input_version.json')
+      || relativePath.endsWith('/dependency_report.json')
+      || relativePath.endsWith('/selection_validity.json')
+      || relativePath.endsWith('/generation_prompt.json'))
 }
 
 async function resolveWorkspaceSource(fileRepository: MovScriptWorkspaceFileRepository): Promise<WorkspaceSourceSnapshot> {
@@ -435,6 +662,9 @@ function validateSourceDomainFiles(files: WorkspaceFileSnapshot[]): MovScriptWor
       ? entry.data.schema.replace(/^movscript\./, '').replace(/\.v\d+$/, '')
       : undefined
     const actualKind = typeof entry.data.kind === 'string' ? entry.data.kind : undefined
+    if (!expectedKind && isRuntimeContentUnitDocument(entry.file.relativePath)) {
+      continue
+    }
     if (!expectedKind) {
       issues.push({
         path: entry.file.path,
@@ -489,13 +719,13 @@ function validateSourceDomainFiles(files: WorkspaceFileSnapshot[]): MovScriptWor
       })
     }
     if (expectedKind === 'content_unit') {
-      validateContentUnitSourceContext(entry.file, entry.data, graph, issues)
-    }
-    if (expectedKind === 'scene_moment') {
-      validateSceneMomentStoryboardTiming(entry.file, entry.data, graph.entityPaths, issues)
+      validateContentUnitRefs(entry.file, entry.data, graph, issues)
     }
     if (expectedKind === 'storyboard') {
       validateStoryboardSettingRefs(entry.file, entry.data, graph, issues)
+    }
+    if (expectedKind === 'audio_cue') {
+      validateAudioCueRefs(entry.file, entry.data, graph, issues)
     }
     if (expectedKind === 'keyframe') {
       validateKeyframeReferenceAssetRefs(entry.file, entry.data, graph, issues)
@@ -557,6 +787,10 @@ function entityKey(entityKind: string, id: unknown): string {
   return `${entityKind}:${String(id ?? '')}`
 }
 
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
 function validateSemanticEntitySchema(
   file: WorkspaceFileSnapshot,
   record: Record<string, unknown>,
@@ -581,82 +815,137 @@ function validateSemanticEntitySchema(
   }
 }
 
-function validateSceneMomentStoryboardTiming(
-  file: WorkspaceFileSnapshot,
-  record: Record<string, unknown>,
-  entityPaths: Set<string>,
-  issues: MovScriptWorkspaceReviewIssue[],
-): void {
-  const storyboardTiming = isRecord(record.storyboard_timing) ? record.storyboard_timing : undefined
-  const items = Array.isArray(storyboardTiming?.items) ? storyboardTiming.items.filter(isRecord) : []
-  const sceneMomentDir = file.relativePath.replace(/\/scene_moment\.json$/, '')
-  for (const [index, item] of items.entries()) {
-    const storyboardId = typeof item.storyboard_id === 'string' ? normalizeWorkspacePath(item.storyboard_id) : undefined
-    if (!storyboardId) {
-      issues.push({
-        path: file.path,
-        severity: 'error',
-        message: `storyboard_timing.items[${index}].storyboard_id is required`,
-      })
-      continue
-    }
-    const storyboardDir = `${sceneMomentDir}/storyboards/${storyboardId}`
-    if (!entityPaths.has(storyboardDir)) {
-      issues.push({
-        path: file.path,
-        severity: 'error',
-        message: `storyboard_timing.items[${index}].storyboard_id does not resolve under this scene moment: ${storyboardId}`,
-      })
-    }
-  }
-}
-
-function validateContentUnitSourceContext(
+function validateContentUnitRefs(
   file: WorkspaceFileSnapshot,
   record: Record<string, unknown>,
   graph: SourceDomainGraph,
   issues: MovScriptWorkspaceReviewIssue[],
 ): void {
-  const sourceContext = isRecord(record.source_context) ? record.source_context : undefined
-  if (!sourceContext) {
-    issues.push({
-      path: file.path,
-      severity: 'error',
-      message: 'content_unit requires source_context',
-    })
+  const contentUnitType = typeof record.content_unit_type === 'string' ? record.content_unit_type : undefined
+  const outputKind = typeof record.output_kind === 'string' ? record.output_kind : undefined
+  if (contentUnitType === 'asset_ref') {
+    const assetRef = idField(record.asset_ref)
+    if (outputKind !== 'image') {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: 'asset_ref content_unit output_kind must be image',
+      })
+    }
+    if (assetRef === undefined || !sourceRecordByPathOrId(graph, 'asset', assetRef)) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: `asset_ref content_unit asset_ref does not resolve: ${String(record.asset_ref ?? '<missing>')}`,
+      })
+    }
     return
   }
-  if (sourceContext.shot_plan_id !== undefined) {
+  if (contentUnitType === 'storyboard_video') {
+    if (outputKind !== 'video') {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: 'storyboard_video content_unit output_kind must be video',
+      })
+    }
+    const sceneMomentRef = typeof record.scene_moment_ref === 'string' ? normalizeWorkspacePath(record.scene_moment_ref) : undefined
+    const storyboardRef = typeof record.storyboard_ref === 'string' ? normalizeWorkspacePath(record.storyboard_ref) : undefined
+    const sceneMoment = sceneMomentRef ? sourceRecordByPathOrId(graph, 'scene_moment', sceneMomentRef) : undefined
+    const storyboard = storyboardRef ? sourceRecordByPathOrId(graph, 'storyboard', storyboardRef) : undefined
+    if (!sceneMomentRef || !sceneMoment) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: `storyboard_video content_unit scene_moment_ref does not resolve: ${sceneMomentRef ?? '<missing>'}`,
+      })
+    }
+    if (!storyboardRef || !storyboard) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: `storyboard_video content_unit storyboard_ref does not resolve: ${storyboardRef ?? '<missing>'}`,
+      })
+    }
+    if (sceneMoment && storyboard && !storyboard.dir.startsWith(`${sceneMoment.dir}/storyboards/`)) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: `storyboard_video content_unit storyboard_ref is not under scene_moment_ref: ${storyboardRef}`,
+      })
+    }
+    for (const [index, keyframeRef] of arrayField(record.keyframe_refs).entries()) {
+      const keyframeId = idField(keyframeRef)
+      if (keyframeId === undefined || !sourceRecordByPathOrId(graph, 'keyframe', keyframeId)) {
+        issues.push({
+          path: file.path,
+          severity: 'error',
+          message: `storyboard_video content_unit keyframe_refs[${index}] does not resolve: ${String(keyframeRef)}`,
+        })
+      }
+    }
+    return
+  }
+  if (contentUnitType !== undefined) {
     issues.push({
       path: file.path,
       severity: 'error',
-      message: 'content_unit source_context must reference scene_moment/storyboard only; do not reference shot_plan_id',
+      message: `unsupported content_unit_type: ${contentUnitType}`,
     })
   }
-  const sceneMomentRef = typeof sourceContext.scene_moment_ref === 'string' ? normalizeWorkspacePath(sourceContext.scene_moment_ref) : undefined
-  const storyboardRef = typeof sourceContext.storyboard_ref === 'string' ? normalizeWorkspacePath(sourceContext.storyboard_ref) : undefined
-  const sceneMoment = sceneMomentRef ? sourceRecordByPathOrId(graph, 'scene_moment', sceneMomentRef) : undefined
+}
+
+function validateAudioCueRefs(
+  file: WorkspaceFileSnapshot,
+  record: Record<string, unknown>,
+  graph: SourceDomainGraph,
+  issues: MovScriptWorkspaceReviewIssue[],
+): void {
+  const scopeRef = typeof record.scope_ref === 'string' ? normalizeWorkspacePath(record.scope_ref) : undefined
+  const storyboardRef = typeof record.storyboard_ref === 'string' ? normalizeWorkspacePath(record.storyboard_ref) : undefined
+  const scope = scopeRef ? sourceRecordByPathOrId(graph, 'scene_moment', scopeRef) : undefined
   const storyboard = storyboardRef ? sourceRecordByPathOrId(graph, 'storyboard', storyboardRef) : undefined
-  if (!sceneMomentRef || !sceneMoment) {
+  const cueDir = file.relativePath.replace(/\/audio_cue\.json$/, '')
+  const sceneMomentDir = cueDir.replace(/\/audio_cues\/[^/]+$/, '')
+  if (scopeRef && !scope) {
     issues.push({
       path: file.path,
       severity: 'error',
-      message: `content_unit source_context.scene_moment_ref does not resolve: ${sceneMomentRef ?? '<missing>'}`,
+      message: `audio_cue scope_ref does not resolve: ${scopeRef}`,
     })
   }
-  if (!storyboardRef || !storyboard) {
+  if (scope && scope.dir !== sceneMomentDir) {
     issues.push({
       path: file.path,
       severity: 'error',
-      message: `content_unit source_context.storyboard_ref does not resolve: ${storyboardRef ?? '<missing>'}`,
+      message: `audio_cue scope_ref must reference the owning scene moment: ${scopeRef}`,
     })
   }
-  if (sceneMoment && storyboard && !storyboard.dir.startsWith(`${sceneMoment.dir}/storyboards/`)) {
+  if (storyboardRef && !storyboard) {
     issues.push({
       path: file.path,
       severity: 'error',
-      message: `content_unit source_context.storyboard_ref is not under source_context.scene_moment_ref: ${storyboardRef}`,
+      message: `audio_cue storyboard_ref does not resolve: ${storyboardRef}`,
     })
+  }
+  if (storyboard && !storyboard.dir.startsWith(`${sceneMomentDir}/storyboards/`)) {
+    issues.push({
+      path: file.path,
+      severity: 'error',
+      message: `audio_cue storyboard_ref is not under owning scene moment: ${storyboardRef}`,
+    })
+  }
+  const assetRefs = Array.isArray(record.asset_refs) ? record.asset_refs : []
+  for (const [index, assetRef] of assetRefs.entries()) {
+    const assetId = idField(assetRef)
+    const asset = assetId !== undefined ? sourceRecordByPathOrId(graph, 'asset', assetId) : undefined
+    if (assetId === undefined || !asset) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: `audio_cue asset_refs[${index}] does not resolve: ${String(assetRef)}`,
+      })
+    }
   }
 }
 
@@ -850,10 +1139,12 @@ function editorStateFromArtifacts(artifacts: MovScriptWorkspaceBuildArtifacts): 
       productionPath: timeline.productionPath,
       itemCount: timeline.items.length,
     })),
-    contentGenerationPrompts: artifacts.contentGenerationPrompts.map((prompt) => ({
-      contentUnitId: prompt.contentUnitId,
-      contentUnitPath: prompt.contentUnitPath,
-      unitKind: prompt.unitKind,
+    contentUnitRuntimePanels: artifacts.contentUnitArtifacts.map((artifact) => ({
+      contentUnitId: artifact.contentUnitId,
+      contentUnitPath: artifact.contentUnitPath,
+      contentUnitType: artifact.runtimePanel.content_unit_type,
+      inputHash: artifact.inputVersion.hash,
+      stale: artifact.selectionValidity.stale,
     })),
   }
 }
@@ -903,8 +1194,15 @@ function sourceEntityKindFromRelativePath(path: string): string | undefined {
   if (fileName === 'segment.json') return 'segment'
   if (fileName === 'scene_moment.json') return 'scene_moment'
   if (fileName === 'storyboard.json') return 'storyboard'
-  if (fileName === 'writing_expression.json') return 'writing_expression'
+  if (fileName === 'audio_cue.json') return 'audio_cue'
+  if (fileName === 'expression_unit.json') return 'expression_unit'
   return undefined
+}
+
+function isRuntimeContentUnitDocument(path: string): boolean {
+  const normalized = normalizeWorkspacePath(path)
+  return /^content_units\/[^/]+\/selection\.json$/.test(normalized)
+    || /^content_units\/[^/]+\/candidates\/[^/]+\/content_candidate\.json$/.test(normalized)
 }
 
 function sourcePathMatchesEntityKind(path: string, entityKind: string): boolean {
@@ -924,7 +1222,8 @@ function sourcePathMatchesEntityKind(path: string, entityKind: string): boolean 
     segment: /^productions\/[^/]+\/segments\/[^/]+\/segment\.json$/,
     scene_moment: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/scene_moment\.json$/,
     storyboard: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/storyboards\/[^/]+\/storyboard\.json$/,
-    writing_expression: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/storyboards\/[^/]+\/writing_expressions\/[^/]+\/writing_expression\.json$/,
+    audio_cue: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/audio_cues\/[^/]+\/audio_cue\.json$/,
+    expression_unit: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/expression_units\/[^/]+\/expression_unit\.json$/,
   }
   return patterns[entityKind]?.test(normalized) ?? false
 }
@@ -944,7 +1243,8 @@ function stableDirectoryIdForSourceEntity(path: string, entityKind: string): str
   if (entityKind === 'segment') return parts[3]
   if (entityKind === 'scene_moment') return parts[5]
   if (entityKind === 'storyboard') return parts[7]
-  if (entityKind === 'writing_expression') return parts[9]
+  if (entityKind === 'audio_cue') return parts[7]
+  if (entityKind === 'expression_unit') return parts[7]
   return undefined
 }
 

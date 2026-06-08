@@ -10,8 +10,10 @@ export {
   SEMANTIC_ENTITY_SCHEMA_IDS,
   SEMANTIC_ENTITY_SCHEMA_REGISTRY,
   WORKSPACE_KIND_VALUES,
+  audioCueEntitySchema,
   assetEntitySchema,
   contentUnitEntitySchema,
+  expressionUnitEntitySchema,
   getActiveSemanticEntitySchemaForKind,
   getSemanticEntitySchemaEntry,
   keyframeEntitySchema,
@@ -30,5 +32,4 @@ export {
   type SemanticEntityKindValue,
   type SemanticEntitySchemaKey,
   type WorkspaceKindValue,
-  writingExpressionEntitySchema,
 } from './schemas.js'
