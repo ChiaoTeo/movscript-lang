@@ -21,7 +21,6 @@ The repository uses the `@movscript/*` npm scope.
 - `@movscript/workspace`: workspace facade for layout, repositories, source/build stores, decision persistence, node adapters, and workspace services.
 - `@movscript/compiler`: compiler-facing facade for overview, inspect, compile, regeneration planning, artifact emission, and build semantics.
 - `@movscript/engine`: embeddable facade that composes workspace, compiler, stores, and candidate workflows.
-- `@movscript/service`: optional service-facing host facade for engine workflows.
 - `@movscript/cli`: CLI entrypoint for inspecting and running engine workflows.
 
 The language package does not provide plugins, does not expose MCP, does not call generation providers, and does not depend on a backend. External services can generate resources separately and write candidates back into the workspace without leaking integration assumptions into the language layer.
