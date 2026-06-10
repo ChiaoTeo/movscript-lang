@@ -1,7 +1,7 @@
 {
   "name": "movscript-lang",
   "version": "0.1.1",
-  "private": true,
+  "private": false,
   "packageManager": "pnpm@10.32.1",
   "description": "MovScript AI film production language, compiler, and workspace artifacts.",
   "repository": {
