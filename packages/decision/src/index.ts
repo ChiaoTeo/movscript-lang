@@ -1,4 +1,4 @@
-export type MovScriptDecisionTargetKind = 'asset' | 'keyframe' | 'content_unit'
+export type MovScriptDecisionTargetKind = 'asset' | 'storyboard' | 'keyframe' | 'content_unit'
 
 export interface MovScriptCandidateSelectionRecord {
   candidate_id?: string | number

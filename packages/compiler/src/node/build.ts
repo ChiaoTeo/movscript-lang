@@ -148,6 +148,12 @@ export interface MovScriptWorkspaceRegenerationPlanResult {
     contentUnitId?: string | number
     contentUnitPath?: string
     reasons: string[]
+    selected?: boolean
+    stale?: boolean
+    candidateId?: string | number
+    resourceId?: string | number
+    currentInputHash?: string
+    acceptedInputHash?: string
   }>
   previewTimelines: Array<{
     productionId?: string | number
@@ -483,6 +489,10 @@ export async function planMovScriptWorkspaceRegeneration(input: MovScriptWorkspa
     input.fileRepository,
     latestBuild.manifest.output.impactReportPath,
   )
+  const domainIndex = await readJsonFile<MovScriptWorkspaceDomainIndex>(
+    input.fileRepository,
+    latestBuild.manifest.output.domainIndexPath,
+  )
   const changedEntities = impactReport?.changedEntities ?? []
   const selectionValidity = await loadContentUnitSelectionValidity(input.fileRepository)
   const affectedContentUnits = affectedContentUnitTargets(changedEntities, selectionValidity)
@@ -490,8 +500,14 @@ export async function planMovScriptWorkspaceRegeneration(input: MovScriptWorkspa
     ...(target.contentUnitId !== undefined ? { contentUnitId: target.contentUnitId } : {}),
     ...(target.contentUnitPath !== undefined ? { contentUnitPath: target.contentUnitPath } : {}),
     reasons: target.reasons,
+    ...(target.selected !== undefined ? { selected: target.selected } : {}),
+    ...(target.stale !== undefined ? { stale: target.stale } : {}),
+    ...(target.candidateId !== undefined ? { candidateId: target.candidateId } : {}),
+    ...(target.resourceId !== undefined ? { resourceId: target.resourceId } : {}),
+    ...(target.currentInputHash !== undefined ? { currentInputHash: target.currentInputHash } : {}),
+    ...(target.acceptedInputHash !== undefined ? { acceptedInputHash: target.acceptedInputHash } : {}),
   }))
-  const previewTimelines = previewTimelineTargets(changedEntities)
+  const previewTimelines = previewTimelineTargets(changedEntities, domainIndex)
   return {
     schema: 'movscript.workspace-regeneration-plan.v1',
     operation: 'regen-plan',
@@ -625,11 +641,12 @@ function affectedContentUnitTargets(
 
 function previewTimelineTargets(
   changedEntities: MovScriptImpactReportArtifact['changedEntities'],
+  index?: MovScriptWorkspaceDomainIndex,
 ): MovScriptWorkspaceRegenerationPlanResult['previewTimelines'] {
   const targets = new Map<string, { productionId?: string | number; path?: string; reasons: string[] }>()
   for (const entity of changedEntities) {
     const previewImpacts = entity.editorImpacts.filter((impact) => impact.toLowerCase().includes('preview timeline'))
-    const productionId = productionIdFromEntityPath(entity.path)
+    const productionId = productionIdForPreviewTarget(entity, index)
     const affectsPreviewTimeline = previewImpacts.length > 0
       || (productionId !== undefined && entity.affectedContentUnits.length > 0)
     if (!affectsPreviewTimeline) continue
@@ -686,6 +703,47 @@ function entityRefTargetKey(ref: MovScriptDomainEntityRef): string {
 function productionIdFromEntityPath(path: string): string | undefined {
   const parts = normalizeWorkspacePath(path).split('/')
   return parts[0] === 'productions' ? parts[1] : undefined
+}
+
+function productionIdForPreviewTarget(
+  entity: MovScriptImpactReportArtifact['changedEntities'][number],
+  index: MovScriptWorkspaceDomainIndex | undefined,
+): string | undefined {
+  const direct = productionIdFromEntityPath(entity.path)
+  if (direct !== undefined) return direct
+  const sourceEntity = indexedEntityForRef(index, entity.entityKind, entity.id, entity.path)
+  const sourceRefProduction = productionIdFromEntityRecordRefs(sourceEntity?.record)
+  if (sourceRefProduction !== undefined) return sourceRefProduction
+  for (const contentUnit of entity.affectedContentUnits) {
+    const affectedEntity = indexedEntityForRef(index, 'content_unit', contentUnit.id, contentUnit.path)
+    const productionId = productionIdFromEntityRecordRefs(affectedEntity?.record)
+    if (productionId !== undefined) return productionId
+  }
+  return undefined
+}
+
+function indexedEntityForRef(
+  index: MovScriptWorkspaceDomainIndex | undefined,
+  entityKind: string,
+  id: string | number | undefined,
+  path: string | undefined,
+) {
+  if (!index) return undefined
+  const normalizedPath = path ? normalizeWorkspacePath(path) : undefined
+  return index.entities.find((entity) => entity.entityKind === entityKind
+    && ((id !== undefined && entity.id !== undefined && String(entity.id) === String(id))
+      || (normalizedPath !== undefined && normalizeWorkspacePath(entity.path) === normalizedPath)
+      || (normalizedPath !== undefined && entityDir(entity.path) === entityDir(normalizedPath))))
+}
+
+function productionIdFromEntityRecordRefs(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined
+  for (const value of [record.production_ref, record.scene_moment_ref, record.storyboard_ref, record.scope_ref]) {
+    if (typeof value !== 'string') continue
+    const productionId = productionIdFromEntityPath(value)
+    if (productionId !== undefined) return productionId
+  }
+  return undefined
 }
 
 function entityDir(path: string): string {
@@ -1032,12 +1090,43 @@ function validateContentUnitRefs(
     }
     return
   }
-  if (contentUnitType === 'storyboard_video') {
+  if (contentUnitType === 'keyframe_ref') {
+    if (outputKind !== 'image') {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: 'keyframe_ref content_unit output_kind must be image',
+      })
+    }
+    const keyframeRefs = [
+      ...arrayField(record.keyframe_refs),
+      ...(idField(record.keyframe_ref) !== undefined ? [record.keyframe_ref] : []),
+    ]
+    for (const [index, keyframeRef] of keyframeRefs.entries()) {
+      const keyframeId = idField(keyframeRef)
+      if (keyframeId === undefined || !sourceRecordByPathOrId(graph, 'keyframe', keyframeId)) {
+        issues.push({
+          path: file.path,
+          severity: 'error',
+          message: `keyframe_ref content_unit keyframe_refs[${index}] does not resolve: ${String(keyframeRef)}`,
+        })
+      }
+    }
+    if (keyframeRefs.length === 0) {
+      issues.push({
+        path: file.path,
+        severity: 'error',
+        message: 'keyframe_ref content_unit requires keyframe_ref or keyframe_refs',
+      })
+    }
+    return
+  }
+  if (contentUnitType === 'storyboard_ref') {
     if (outputKind !== 'video') {
       issues.push({
         path: file.path,
         severity: 'error',
-        message: 'storyboard_video content_unit output_kind must be video',
+        message: 'storyboard_ref content_unit output_kind must be video',
       })
     }
     const sceneMomentRef = typeof record.scene_moment_ref === 'string' ? normalizeWorkspacePath(record.scene_moment_ref) : undefined
@@ -1048,21 +1137,21 @@ function validateContentUnitRefs(
       issues.push({
         path: file.path,
         severity: 'error',
-        message: `storyboard_video content_unit scene_moment_ref does not resolve: ${sceneMomentRef ?? '<missing>'}`,
+        message: `storyboard_ref content_unit scene_moment_ref does not resolve: ${sceneMomentRef ?? '<missing>'}`,
       })
     }
     if (!storyboardRef || !storyboard) {
       issues.push({
         path: file.path,
         severity: 'error',
-        message: `storyboard_video content_unit storyboard_ref does not resolve: ${storyboardRef ?? '<missing>'}`,
+        message: `storyboard_ref content_unit storyboard_ref does not resolve: ${storyboardRef ?? '<missing>'}`,
       })
     }
-    if (sceneMoment && storyboard && !storyboard.dir.startsWith(`${sceneMoment.dir}/storyboards/`)) {
+    if (sceneMoment && storyboard && !isStoryboardUnderSceneMoment(storyboard.dir, sceneMoment.dir)) {
       issues.push({
         path: file.path,
         severity: 'error',
-        message: `storyboard_video content_unit storyboard_ref is not under scene_moment_ref: ${storyboardRef}`,
+        message: `storyboard_ref content_unit storyboard_ref is not under scene_moment_ref: ${storyboardRef}`,
       })
     }
     for (const [index, keyframeRef] of arrayField(record.keyframe_refs).entries()) {
@@ -1071,18 +1160,11 @@ function validateContentUnitRefs(
         issues.push({
           path: file.path,
           severity: 'error',
-          message: `storyboard_video content_unit keyframe_refs[${index}] does not resolve: ${String(keyframeRef)}`,
+          message: `storyboard_ref content_unit keyframe_refs[${index}] does not resolve: ${String(keyframeRef)}`,
         })
       }
     }
     return
-  }
-  if (contentUnitType !== undefined) {
-    issues.push({
-      path: file.path,
-      severity: 'error',
-      message: `unsupported content_unit_type: ${contentUnitType}`,
-    })
   }
 }
 
@@ -1119,7 +1201,7 @@ function validateAudioCueRefs(
       message: `audio_cue storyboard_ref does not resolve: ${storyboardRef}`,
     })
   }
-  if (storyboard && !storyboard.dir.startsWith(`${sceneMomentDir}/storyboards/`)) {
+  if (storyboard && !isStoryboardUnderSceneMoment(storyboard.dir, sceneMomentDir)) {
     issues.push({
       path: file.path,
       severity: 'error',
@@ -1175,6 +1257,11 @@ function validateStoryboardSettingRefs(
       }
     }
   }
+}
+
+function isStoryboardUnderSceneMoment(storyboardDir: string, sceneMomentDir: string): boolean {
+  return /^.+\/shots\/[^/]+\/storyboards\/[^/]+$/.test(storyboardDir)
+    && storyboardDir.startsWith(`${sceneMomentDir}/shots/`)
 }
 
 function validateKeyframeReferenceAssetRefs(
@@ -1343,6 +1430,7 @@ function businessEntityLabel(entityKind: string): string {
     production: 'Production',
     segment: 'Segment',
     scene_moment: 'Scene moment',
+    shot: 'Shot',
     storyboard: 'Storyboard',
     audio_cue: 'Audio cue',
     expression_unit: 'Expression unit',
@@ -1370,6 +1458,7 @@ function businessImpactAreasForEntityKind(entityKind: string): string[] {
     case 'production':
     case 'segment':
     case 'scene_moment':
+    case 'shot':
     case 'storyboard':
     case 'audio_cue':
     case 'expression_unit':
@@ -1488,6 +1577,7 @@ function sourceEntityKindFromRelativePath(path: string): string | undefined {
   if (fileName === 'production.json') return 'production'
   if (fileName === 'segment.json') return 'segment'
   if (fileName === 'scene_moment.json') return 'scene_moment'
+  if (fileName === 'shot.json') return 'shot'
   if (fileName === 'storyboard.json') return 'storyboard'
   if (fileName === 'audio_cue.json') return 'audio_cue'
   if (fileName === 'expression_unit.json') return 'expression_unit'
@@ -1512,11 +1602,12 @@ function sourcePathMatchesEntityKind(path: string, entityKind: string): boolean 
     script_version: /^scripts\/[^/]+\/versions\/[^/]+\/script_version\.json$/,
     script_block: /^scripts\/[^/]+\/versions\/[^/]+\/blocks\/[^/]+\/script_block\.json$/,
     content_unit: /^content_units\/[^/]+\/content_unit\.json$/,
-    keyframe: /^(content_units\/[^/]+\/keyframes\/[^/]+\/keyframe\.json|productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/keyframes\/[^/]+\/keyframe\.json)$/,
+    keyframe: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/shots\/[^/]+\/keyframes\/[^/]+\/keyframe\.json$/,
     production: /^productions\/[^/]+\/production\.json$/,
     segment: /^productions\/[^/]+\/segments\/[^/]+\/segment\.json$/,
     scene_moment: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/scene_moment\.json$/,
-    storyboard: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/storyboards\/[^/]+\/storyboard\.json$/,
+    shot: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/shots\/[^/]+\/shot\.json$/,
+    storyboard: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/shots\/[^/]+\/storyboards\/[^/]+\/storyboard\.json$/,
     audio_cue: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/audio_cues\/[^/]+\/audio_cue\.json$/,
     expression_unit: /^productions\/[^/]+\/segments\/[^/]+\/scene_moments\/[^/]+\/expression_units\/[^/]+\/expression_unit\.json$/,
   }
@@ -1533,11 +1624,12 @@ function stableDirectoryIdForSourceEntity(path: string, entityKind: string): str
   if (entityKind === 'script_version') return parts[3]
   if (entityKind === 'script_block') return parts[5]
   if (entityKind === 'content_unit') return parts[1]
-  if (entityKind === 'keyframe') return parts[0] === 'content_units' ? parts[3] : parts[7]
+  if (entityKind === 'keyframe') return parts[9]
   if (entityKind === 'production') return parts[1]
   if (entityKind === 'segment') return parts[3]
   if (entityKind === 'scene_moment') return parts[5]
-  if (entityKind === 'storyboard') return parts[7]
+  if (entityKind === 'shot') return parts[7]
+  if (entityKind === 'storyboard') return parts[9]
   if (entityKind === 'audio_cue') return parts[7]
   if (entityKind === 'expression_unit') return parts[7]
   return undefined

@@ -39,7 +39,6 @@ import {
   upsertMovScriptContentUnit,
   upsertMovScriptProjectStandards,
   updateMovScriptEntityTransition,
-  updateMovScriptStoryboardShotPlans,
   updateMovScriptStoryboardTimeline,
   upsertMovScriptWorkspaceScript,
   readMovScriptWorkspaceScriptSource,
@@ -75,8 +74,6 @@ import {
   type MovScriptScriptVersionSnapshotResult,
   type MovScriptEntityTransitionUpdateInput,
   type MovScriptEntityTransitionUpdateResult,
-  type MovScriptShotPlanUpdateInput,
-  type MovScriptShotPlanUpdateResult,
   type MovScriptStoryboardTimelineUpdateInput,
   type MovScriptStoryboardTimelineUpdateResult,
   type MovScriptWorkspaceFileRepository,
@@ -144,9 +141,6 @@ export interface MovScriptWorkspaceService {
   updateStoryboardTimeline(
     input: Omit<MovScriptStoryboardTimelineUpdateInput, 'fileRepository'>,
   ): Promise<MovScriptStoryboardTimelineUpdateResult>
-  updateStoryboardShotPlans(
-    input: Omit<MovScriptShotPlanUpdateInput, 'fileRepository'>,
-  ): Promise<MovScriptShotPlanUpdateResult>
   appendCandidate(
     input: Omit<MovScriptInlineCandidateWriteInput, 'fileRepository'>,
   ): Promise<MovScriptInlineCandidateWriteResult>
@@ -325,28 +319,34 @@ export function createMovScriptWorkspaceService(
         ...input,
       })
     },
-    updateStoryboardShotPlans(input) {
-      return updateMovScriptStoryboardShotPlans({
-        fileRepository: options.fileRepository,
-        ...input,
-      })
-    },
     appendCandidate(input) {
       return appendMovScriptInlineCandidate({
         fileRepository: options.fileRepository,
         ...input,
       })
     },
-    createContentCandidate(input) {
+    async createContentCandidate(input) {
+      const inputVersion = input.inputVersion ?? await readContentUnitInputVersionArtifact(options.fileRepository, input.contentUnitId)
+      const promptSnapshot = mergePromptSnapshots(
+        await readContentUnitRuntimePrompt(options.fileRepository, input.contentUnitId),
+        input.promptSnapshot,
+      )
       return createMovScriptContentCandidate({
         fileRepository: options.fileRepository,
         ...input,
+        ...(inputVersion !== undefined ? { inputVersion } : {}),
+        ...(promptSnapshot !== undefined ? { promptSnapshot } : {}),
       })
     },
-    selectContentUnitCandidate(input) {
+    async selectContentUnitCandidate(input) {
+      const candidate = await readContentCandidateRecord(options.fileRepository, input.contentUnitId, input.candidateId)
+      const acceptedInputHash = input.acceptedInputHash ?? stringField(recordField(candidate?.input_version)?.hash)
+      const resourceId = input.resourceId ?? firstCandidateResourceId(candidate)
       return selectMovScriptContentUnitCandidate({
         fileRepository: options.fileRepository,
         ...input,
+        ...(resourceId !== undefined ? { resourceId } : {}),
+        ...(acceptedInputHash !== undefined ? { acceptedInputHash } : {}),
       })
     },
     createAssetSlotCandidate(input) {
@@ -392,6 +392,60 @@ async function readJSONArtifact(
   if (!file) return undefined
   const parsed = JSON.parse(file.content) as unknown
   return isRecord(parsed) ? parsed : undefined
+}
+
+function contentUnitBuildArtifactPath(contentUnitId: string | number, filename: string): string {
+  return `${MOVSCRIPT_BUILD_CURRENT_DIR}/content_units/${entityPathSlug(contentUnitId, 'content_unit')}/${filename}`
+}
+
+function contentCandidatePath(contentUnitId: string | number, candidateId: string | number): string {
+  return `content_units/${entityPathSlug(contentUnitId, 'content_unit')}/candidates/${entityPathSlug(candidateId, 'candidate')}/content_candidate.json`
+}
+
+async function readContentUnitInputVersionArtifact(
+  fileRepository: MovScriptWorkspaceFileRepository,
+  contentUnitId: string | number,
+): Promise<Record<string, unknown> | undefined> {
+  return readJSONArtifact(fileRepository, contentUnitBuildArtifactPath(contentUnitId, 'input_version.json'))
+}
+
+async function readContentUnitRuntimePrompt(
+  fileRepository: MovScriptWorkspaceFileRepository,
+  contentUnitId: string | number,
+): Promise<Record<string, unknown> | undefined> {
+  const runtimePanel = await readJSONArtifact(fileRepository, contentUnitBuildArtifactPath(contentUnitId, 'runtime_panel.json'))
+  return recordField(runtimePanel?.prompt)
+}
+
+async function readContentCandidateRecord(
+  fileRepository: MovScriptWorkspaceFileRepository,
+  contentUnitId: string | number,
+  candidateId: string | number,
+): Promise<Record<string, unknown> | undefined> {
+  return readJSONArtifact(fileRepository, contentCandidatePath(contentUnitId, candidateId))
+}
+
+function mergePromptSnapshots(
+  runtimePrompt: Record<string, unknown> | undefined,
+  promptSnapshot: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!runtimePrompt) return promptSnapshot
+  if (!promptSnapshot) return runtimePrompt
+  return pruneUndefined({ ...runtimePrompt, ...promptSnapshot })
+}
+
+function firstCandidateResourceId(candidate: Record<string, unknown> | undefined): string | number | undefined {
+  const firstOutput = arrayField(candidate?.outputs).filter(isRecord)[0]
+  const resourceId = firstOutput?.resource_id
+  return typeof resourceId === 'string' || typeof resourceId === 'number' ? resourceId : undefined
+}
+
+function recordField(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
 }
 
 async function writeJSONDocument(

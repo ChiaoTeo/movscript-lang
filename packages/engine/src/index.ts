@@ -26,6 +26,7 @@ export interface MovScriptEngineListInput {
   productionId?: string | number
   segmentId?: string | number
   sceneMomentId?: string | number
+  shotId?: string | number
   limit?: number
 }
 
@@ -34,6 +35,7 @@ export interface MovScriptEngineDeleteInput {
   productionId?: string | number
   segmentId?: string | number
   sceneMomentId?: string | number
+  shotId?: string | number
 }
 
 export interface MovScriptEngineProductionInput {
@@ -71,8 +73,26 @@ export interface MovScriptEngineStoryboardInput {
   productionId?: string | number
   segmentId?: string | number
   sceneMomentId?: string | number
+  shotId?: string | number
   title?: string
   order?: number
+}
+
+export interface MovScriptEngineShotInput {
+  id?: string | number
+  productionId?: string | number
+  segmentId?: string | number
+  sceneMomentId?: string | number
+  title?: string
+  kind?: string
+  order?: number
+  shotSize?: string
+  camera?: Record<string, unknown>
+  blocking?: Record<string, unknown>
+  lighting?: Record<string, unknown>
+  sound?: Record<string, unknown>
+  expression?: Record<string, unknown>
+  timing?: Record<string, unknown>
 }
 
 export interface MovScriptEngineAudioCueInput {
@@ -80,11 +100,11 @@ export interface MovScriptEngineAudioCueInput {
   productionId?: string | number
   segmentId?: string | number
   sceneMomentId?: string | number
+  shotId?: string | number
   storyboardId?: string | number
   title?: string
   kind?: string
   order?: number
-  shotPlanId?: string
   promptHint?: string
 }
 
@@ -114,6 +134,7 @@ export interface MovScriptEngineContentUnitInput {
   productionId?: string | number
   segmentId?: string | number
   sceneMomentId?: string | number
+  shotId?: string | number
   storyboardId?: string | number
   audioCueId?: string | number
   prompt?: string
@@ -165,6 +186,10 @@ export interface MovScriptEngine {
   createSceneMoment(input: MovScriptEngineSceneMomentInput): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
   updateSceneMoment(input: MovScriptEngineSceneMomentInput & { id: string | number }): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
   deleteSceneMoment(input: MovScriptEngineDeleteInput): Promise<{ deleted: true; entity: MovScriptWorkspaceIndexedEntity }>
+  listShots(input?: MovScriptEngineListInput): Promise<MovScriptWorkspaceIndexedEntity[]>
+  createShot(input: MovScriptEngineShotInput): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
+  updateShot(input: MovScriptEngineShotInput & { id: string | number }): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
+  deleteShot(input: MovScriptEngineDeleteInput): Promise<{ deleted: true; entity: MovScriptWorkspaceIndexedEntity }>
   listStoryboards(input?: MovScriptEngineListInput): Promise<MovScriptWorkspaceIndexedEntity[]>
   createStoryboard(input: MovScriptEngineStoryboardInput): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
   updateStoryboard(input: MovScriptEngineStoryboardInput & { id: string | number }): ReturnType<MovScriptWorkspaceService['saveProductionSnapshot']>
@@ -265,6 +290,18 @@ export function createMovScriptEngine(options: MovScriptEngineOptions): MovScrip
     deleteSceneMoment(input) {
       return deletePlanningEntity(workspaceService, 'scene_moment', input)
     },
+    listShots(input = {}) {
+      return workspaceService.queryEntities(planningQuery('shot', input))
+    },
+    createShot(input) {
+      return saveShot(workspaceService, input)
+    },
+    updateShot(input) {
+      return saveShot(workspaceService, input)
+    },
+    deleteShot(input) {
+      return deletePlanningEntity(workspaceService, 'shot', input)
+    },
     listStoryboards(input = {}) {
       return workspaceService.queryEntities(planningQuery('storyboard', input))
     },
@@ -358,7 +395,7 @@ export function createMovScriptEngine(options: MovScriptEngineOptions): MovScrip
   }
 }
 
-type PlanningEntityKind = 'production' | 'segment' | 'scene_moment' | 'storyboard' | 'audio_cue' | 'expression_unit' | 'content_unit'
+type PlanningEntityKind = 'production' | 'segment' | 'scene_moment' | 'shot' | 'storyboard' | 'audio_cue' | 'expression_unit' | 'content_unit'
 
 function planningQuery(entityKind: PlanningEntityKind, input: MovScriptEngineListInput = {}) {
   return pruneUndefined({
@@ -368,6 +405,7 @@ function planningQuery(entityKind: PlanningEntityKind, input: MovScriptEngineLis
     productionId: input.productionId,
     segmentId: input.segmentId,
     sceneMomentId: input.sceneMomentId,
+    shotId: input.shotId,
     limit: input.limit,
   })
 }
@@ -437,6 +475,7 @@ function saveStoryboard(
 ) {
   const segmentId = requiredId(input.segmentId, 'segmentId')
   const sceneMomentId = requiredId(input.sceneMomentId, 'sceneMomentId')
+  const shotId = requiredId(input.shotId, 'shotId')
   return workspaceService.saveProductionSnapshot({
     productionId: input.productionId ?? 'main',
     snapshot: {
@@ -444,10 +483,45 @@ function saveStoryboard(
         id: segmentId,
         scene_moments: [{
           id: sceneMomentId,
-          storyboards: [pruneUndefined({
-            id: input.id ?? 'main',
+          shots: [{
+            id: shotId,
+            storyboards: [pruneUndefined({
+              id: input.id ?? 'main',
+              title: input.title,
+              order: input.order,
+            })],
+          }],
+        }],
+      }],
+    },
+  })
+}
+
+function saveShot(
+  workspaceService: MovScriptWorkspaceService,
+  input: MovScriptEngineShotInput,
+) {
+  const segmentId = requiredId(input.segmentId, 'segmentId')
+  const sceneMomentId = requiredId(input.sceneMomentId, 'sceneMomentId')
+  return workspaceService.saveProductionSnapshot({
+    productionId: input.productionId ?? 'main',
+    snapshot: {
+      segments: [{
+        id: segmentId,
+        scene_moments: [{
+          id: sceneMomentId,
+          shots: [pruneUndefined({
+            id: input.id,
             title: input.title,
+            kind: input.kind,
             order: input.order,
+            shot_size: input.shotSize,
+            camera: input.camera,
+            blocking: input.blocking,
+            lighting: input.lighting,
+            sound: input.sound,
+            expression: input.expression,
+            timing: input.timing,
           })],
         }],
       }],
@@ -473,8 +547,8 @@ function saveAudioCue(
             title: input.title,
             kind: input.kind,
             order: input.order,
+            shot_id: input.shotId,
             storyboard_id: input.storyboardId,
-            shot_plan_id: input.shotPlanId,
             prompt_hint: input.promptHint,
           })],
         }],
@@ -522,11 +596,12 @@ function saveContentUnit(
     unit: pruneUndefined({
       id: input.id,
       title: input.title,
-      content_unit_type: input.contentUnitType ?? input.kind ?? 'storyboard_video',
+      content_unit_type: input.contentUnitType ?? input.kind ?? 'storyboard_ref',
       output_kind: input.outputKind ?? (input.contentUnitType === 'asset_ref' || input.kind === 'asset_ref' ? 'image' : 'video'),
       production_id: input.productionId,
       segment_id: input.segmentId,
       scene_moment_id: input.sceneMomentId,
+      shot_id: input.shotId,
       storyboard_id: input.storyboardId,
       audio_cue_id: input.audioCueId,
       asset_ref: input.assetRef,

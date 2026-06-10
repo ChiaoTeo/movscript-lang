@@ -34,17 +34,6 @@ export interface MovScriptStoryboardTimelineUpdateResult {
   record: Record<string, unknown>
 }
 
-export interface MovScriptShotPlanUpdateInput {
-  fileRepository: MovScriptWorkspaceFileRepository
-  targetPath: string
-  shotPlans: Array<Record<string, unknown>>
-}
-
-export interface MovScriptShotPlanUpdateResult {
-  path: string
-  record: Record<string, unknown>
-}
-
 export async function updateMovScriptEntityTransition(
   input: MovScriptEntityTransitionUpdateInput,
 ): Promise<MovScriptEntityTransitionUpdateResult> {
@@ -67,20 +56,6 @@ export async function updateMovScriptStoryboardTimeline(
     ...current,
     timeline: normalizeTimeline(input.timeline),
   })
-  await input.fileRepository.write({ path: targetPath, content: serializeWorkspaceRecord(record) })
-  return { path: targetPath, record }
-}
-
-export async function updateMovScriptStoryboardShotPlans(
-  input: MovScriptShotPlanUpdateInput,
-): Promise<MovScriptShotPlanUpdateResult> {
-  const targetPath = normalizeWorkspacePath(input.targetPath)
-  const current = await readWorkspaceRecord(input.fileRepository, targetPath, 'storyboard')
-  const shot_plans = input.shotPlans.map((item, index) => normalizeShotPlan(item, index))
-  const record = {
-    ...current,
-    shot_plans,
-  }
   await input.fileRepository.write({ path: targetPath, content: serializeWorkspaceRecord(record) })
   return { path: targetPath, record }
 }
@@ -120,24 +95,6 @@ function normalizeTimeline(timeline: MovScriptStoryboardTimeline | undefined): R
   })
 }
 
-function normalizeShotPlan(item: Record<string, unknown>, index: number): Record<string, unknown> {
-  const id = stringValue(item.id)
-  const order = typeof item.order === 'number' && Number.isFinite(item.order) ? item.order : undefined
-  if (!id) throw new Error(`shot_plans[${index}].id required`)
-  if (order === undefined) throw new Error(`shot_plans[${index}].order required`)
-  return pruneUndefined({
-    ...item,
-    id,
-    order,
-    shot_size: stringValue(item.shot_size),
-    camera: isRecord(item.camera) ? item.camera : undefined,
-    blocking: isRecord(item.blocking) ? item.blocking : undefined,
-    lighting: isRecord(item.lighting) ? item.lighting : undefined,
-    performance: Array.isArray(item.performance) ? item.performance.filter(isRecord) : undefined,
-    reference_image_refs: Array.isArray(item.reference_image_refs) ? item.reference_image_refs.filter(isString) : undefined,
-  })
-}
-
 function serializeWorkspaceRecord(value: Record<string, unknown>): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
@@ -152,10 +109,6 @@ function stringValue(value: unknown): string | undefined {
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === 'string'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -167,7 +167,14 @@ const COMPILER_VERSION = 'movscript-compiler@0.1.0'
 
 const CONTENT_UNIT_ADAPTERS: Record<string, ContentUnitAdapter> = {
   asset_ref: assetRefAdapter(),
-  storyboard_video: storyboardVideoAdapter(),
+  keyframe_ref: keyframeRefAdapter(),
+  storyboard_ref: storyboardRefAdapter(),
+}
+
+const GENERIC_UNTRACKED_INPUT_HASH = sha256('movscript.content_unit.generic_untracked.v1')
+
+export function hasSpecializedContentUnitAdapter(contentUnitType: unknown): boolean {
+  return typeof contentUnitType === 'string' && CONTENT_UNIT_ADAPTERS[contentUnitType] !== undefined
 }
 
 export function buildContentUnitArtifacts(
@@ -189,8 +196,7 @@ export function buildContentUnitArtifact(
 ): ContentUnitBuildArtifactBundle {
   if (contentUnit.id === undefined) throw new Error(`content_unit missing id: ${contentUnit.path}`)
   const contentUnitType = requiredString(contentUnit.record.content_unit_type, `content_unit_type missing: ${contentUnit.path}`)
-  const adapter = CONTENT_UNIT_ADAPTERS[contentUnitType]
-  if (!adapter) throw new Error(`unsupported content_unit_type: ${contentUnitType}`)
+  const adapter = CONTENT_UNIT_ADAPTERS[contentUnitType] ?? genericUntrackedAdapter(contentUnitType)
   const context: AdapterContext = {
     index,
     contentUnit,
@@ -238,6 +244,7 @@ export function buildContentUnitArtifact(
   const acceptedInputHash = stringField(selection?.accepted_input_hash)
   const selectedCandidateId = idField(selection?.candidate_id)
   const selectedResourceId = idField(selection?.resource_id)
+  const untrackedHash = adapter.hashRule.id === 'generic_untracked.hash'
   const selectionValidity: ContentUnitSelectionValidity = {
     schema: 'movscript.content_unit_selection_validity.v1',
     content_unit_ref: entityDir(contentUnit.path),
@@ -246,7 +253,7 @@ export function buildContentUnitArtifact(
     ...(selectedResourceId !== undefined ? { resource_id: selectedResourceId } : {}),
     current_input_hash: inputVersion.hash,
     ...(acceptedInputHash ? { accepted_input_hash: acceptedInputHash } : {}),
-    stale: Boolean(acceptedInputHash && acceptedInputHash !== inputVersion.hash),
+    stale: !untrackedHash && Boolean(acceptedInputHash && acceptedInputHash !== inputVersion.hash),
     stale_policy: stalePolicy,
     reason: stringField(selection?.reason),
   }
@@ -257,6 +264,39 @@ export function buildContentUnitArtifact(
     inputVersion,
     dependencyReport,
     selectionValidity,
+  }
+}
+
+function genericUntrackedAdapter(contentUnitType: string): ContentUnitAdapter {
+  return {
+    type: contentUnitType,
+    version: 'generic_untracked@1',
+    outputKind: 'metadata',
+    hashRule: { id: 'generic_untracked.hash', version: '1' },
+    validate() {
+      return []
+    },
+    collectDependencies() {
+      return {
+        entities: {},
+        upstreamSelections: [],
+      }
+    },
+    collectHashInputs() {
+      return []
+    },
+    rebuild(context, build) {
+      return {
+        schema: 'movscript.content_unit_runtime_panel.v1',
+        content_unit_ref: entityDir(context.contentUnit.path),
+        content_unit_id: context.contentUnit.id,
+        content_unit_type: contentUnitType,
+        adapter_version: this.version,
+        output_kind: contentUnitOutputKind(context.contentUnit.record.output_kind),
+        input_hash: build.inputVersion.hash,
+        status: 'ready',
+      }
+    },
   }
 }
 
@@ -335,30 +375,130 @@ function assetRefAdapter(): ContentUnitAdapter {
   }
 }
 
-function storyboardVideoAdapter(): ContentUnitAdapter {
+function keyframeRefAdapter(): ContentUnitAdapter {
   return {
-    type: 'storyboard_video',
-    version: 'storyboard_video@1',
-    outputKind: 'video',
-    hashRule: { id: 'storyboard_video.hash', version: '1' },
+    type: 'keyframe_ref',
+    version: 'keyframe_ref@1',
+    outputKind: 'image',
+    hashRule: { id: 'keyframe_ref.hash', version: '1' },
     validate(context) {
       const issues: ContentUnitDependencyReport['issues'] = []
-      if (context.contentUnit.record.output_kind !== 'video') issues.push({ severity: 'error', message: 'storyboard_video output_kind must be video' })
-      if (!stringField(context.contentUnit.record.scene_moment_ref)) issues.push({ severity: 'error', message: 'storyboard_video requires scene_moment_ref' })
-      if (!stringField(context.contentUnit.record.storyboard_ref)) issues.push({ severity: 'error', message: 'storyboard_video requires storyboard_ref' })
+      if (context.contentUnit.record.output_kind !== 'image') issues.push({ severity: 'error', message: 'keyframe_ref output_kind must be image' })
+      const keyframes = contentUnitKeyframes(context.index, context.contentUnit)
+      if (keyframes.length === 0) issues.push({ severity: 'error', message: 'keyframe_ref requires keyframe_ref or keyframe_refs' })
+      return issues
+    },
+    collectDependencies(context) {
+      const keyframes = contentUnitKeyframes(context.index, context.contentUnit)
+      const sceneMoment = findEntityByRef(context.index, 'scene_moment', context.contentUnit.record.scene_moment_ref)
+      const storyboard = findEntityByRef(context.index, 'storyboard', context.contentUnit.record.storyboard_ref)
+      const assetRefs = keyframes.flatMap((keyframe) => arrayField(keyframe.record.reference_asset_refs))
+      const upstreamSelections = resolveAssetRefSelections(context.index, assetRefs)
+      return {
+        entities: {
+          project_standards: optionalEntity(firstEntity(context.index, 'project_standards')),
+          scene_moment: optionalEntity(sceneMoment),
+          storyboard: optionalEntity(storyboard),
+          keyframes,
+        },
+        upstreamSelections,
+      }
+    },
+    collectHashInputs(context, dependencies) {
+      return [
+        hashSourceField(context.contentUnit, 'content_unit_type'),
+        hashSourceField(context.contentUnit, 'output_kind'),
+        hashSourceField(context.contentUnit, 'scene_moment_ref'),
+        hashSourceField(context.contentUnit, 'storyboard_ref'),
+        hashSourceField(context.contentUnit, 'keyframe_ref'),
+        hashSourceField(context.contentUnit, 'keyframe_refs'),
+        hashSourceField(context.contentUnit, 'edit_prompt'),
+        hashSourceField(context.contentUnit, 'model_intent'),
+        ...hashEntities(entityList(dependencies, 'project_standards'), 'project_standards'),
+        ...hashEntities(entityList(dependencies, 'scene_moment'), 'scene_moment'),
+        ...hashEntities(entityList(dependencies, 'storyboard'), 'storyboard'),
+        ...hashEntities(entityList(dependencies, 'keyframes'), 'keyframe', 'visual_anchor'),
+        ...dependencies.upstreamSelections.map((selection) => ({
+          role: selection.role ?? 'asset_ref',
+          kind: 'upstream_selection' as const,
+          ref: selection.content_unit_ref,
+          value: selection,
+          continuityRole: selection.continuity_role,
+        })),
+      ]
+    },
+    rebuild(context, build) {
+      const standards = entityList(build.dependencies, 'project_standards')[0]
+      const sceneMoment = entityList(build.dependencies, 'scene_moment')[0]
+      const storyboard = entityList(build.dependencies, 'storyboard')[0]
+      const keyframes = entityList(build.dependencies, 'keyframes')
+      const editPrompt = recordField(context.contentUnit.record.edit_prompt)
+      const promptParts = [
+        'Create a keyframe reference image.',
+        summaryLine('Project standards', standards?.record),
+        summaryLine('Scene moment', sceneMoment?.record),
+        summaryLine('Storyboard', storyboard?.record),
+        ...keyframes.map((keyframe) => summaryLine('Keyframe', keyframe.record)),
+        stringField(editPrompt?.text),
+      ].filter(isString)
+      return {
+        schema: 'movscript.content_unit_runtime_panel.v1',
+        content_unit_ref: entityDir(context.contentUnit.path),
+        content_unit_id: context.contentUnit.id,
+        content_unit_type: 'keyframe_ref',
+        adapter_version: this.version,
+        output_kind: 'image',
+        input_hash: build.inputVersion.hash,
+        status: keyframes.length > 0 ? 'ready' : 'blocked',
+        prompt: {
+          text: promptParts.join('\n'),
+          negative_text: stringField(editPrompt?.negative_text),
+          structured: recordField(editPrompt?.structured),
+        },
+        runtime_request: {
+          capability: 'image',
+          model_intent: recordField(context.contentUnit.record.model_intent),
+          inputs: build.dependencies.upstreamSelections.map((selection) => ({
+            role: selection.role ?? 'asset_ref',
+            kind: 'image',
+            resource_id: selection.resource_id,
+            ref: selection.content_unit_ref,
+            required: false,
+          })),
+          params: recordField(recordField(context.contentUnit.record.model_intent)?.params),
+        },
+        review: keyframes.length > 0 ? undefined : { blockers: ['keyframe_ref source does not resolve'] },
+      }
+    },
+  }
+}
+
+function storyboardRefAdapter(): ContentUnitAdapter {
+  return {
+    type: 'storyboard_ref',
+    version: 'storyboard_ref@1',
+    outputKind: 'video',
+    hashRule: { id: 'storyboard_ref.hash', version: '1' },
+    validate(context) {
+      const issues: ContentUnitDependencyReport['issues'] = []
+      if (context.contentUnit.record.output_kind !== 'video') issues.push({ severity: 'error', message: 'storyboard_ref output_kind must be video' })
+      if (!stringField(context.contentUnit.record.scene_moment_ref)) issues.push({ severity: 'error', message: 'storyboard_ref requires scene_moment_ref' })
+      if (!stringField(context.contentUnit.record.storyboard_ref)) issues.push({ severity: 'error', message: 'storyboard_ref requires storyboard_ref' })
       return issues
     },
     collectDependencies(context) {
       const sceneMoment = findEntityByRef(context.index, 'scene_moment', context.contentUnit.record.scene_moment_ref)
       const storyboard = findEntityByRef(context.index, 'storyboard', context.contentUnit.record.storyboard_ref)
-      const sceneMomentDir = sceneMoment ? entityDir(sceneMoment.path) : ''
+      const shot = storyboard ? parentShotForEntity(context.index, storyboard) : undefined
       const keyframeRefs = arrayField(context.contentUnit.record.keyframe_refs)
+      const shotDir = shot ? entityDir(shot.path) : ''
       const keyframes = keyframeRefs.length > 0
         ? keyframeRefs.map((ref) => findEntityByRef(context.index, 'keyframe', ref)).filter(isDefined)
-        : sceneMomentDir
+        : shotDir
           ? queryMovScriptWorkspaceEntities(context.index, { entityKind: 'keyframe' })
-            .filter((entity) => entity.path.startsWith(`${sceneMomentDir}/keyframes/`))
+            .filter((entity) => entity.path.startsWith(`${shotDir}/keyframes/`))
           : []
+      const sceneMomentDir = sceneMoment ? entityDir(sceneMoment.path) : ''
       const expressionUnits = sceneMomentDir
         ? queryMovScriptWorkspaceEntities(context.index, { entityKind: 'expression_unit' })
           .filter((entity) => entity.path.startsWith(`${sceneMomentDir}/expression_units/`))
@@ -376,6 +516,7 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
         entities: {
           project_standards: optionalEntity(firstEntity(context.index, 'project_standards')),
           scene_moment: optionalEntity(sceneMoment),
+          shot: optionalEntity(shot),
           storyboard: optionalEntity(storyboard),
           keyframes,
           expression_units: expressionUnits,
@@ -395,6 +536,7 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
         hashSourceField(context.contentUnit, 'model_intent'),
         ...hashEntities(entityList(dependencies, 'project_standards'), 'project_standards'),
         ...hashEntities(entityList(dependencies, 'scene_moment'), 'scene_moment'),
+        ...hashEntities(entityList(dependencies, 'shot'), 'shot'),
         ...hashEntities(entityList(dependencies, 'storyboard'), 'storyboard'),
         ...hashEntities(entityList(dependencies, 'keyframes'), 'keyframe', 'video_continuity'),
         ...hashEntities(entityList(dependencies, 'expression_units'), 'expression_unit', 'narrative_continuity'),
@@ -410,6 +552,7 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
     },
     rebuild(context, build) {
       const sceneMoment = entityList(build.dependencies, 'scene_moment')[0]
+      const shot = entityList(build.dependencies, 'shot')[0]
       const storyboard = entityList(build.dependencies, 'storyboard')[0]
       const standards = entityList(build.dependencies, 'project_standards')[0]
       const keyframes = entityList(build.dependencies, 'keyframes')
@@ -420,6 +563,7 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
         'Create a storyboard video.',
         summaryLine('Project standards', standards?.record),
         summaryLine('Scene moment', sceneMoment?.record),
+        summaryLine('Shot', shot?.record),
         summaryLine('Storyboard', storyboard?.record),
         ...keyframes.map((keyframe) => summaryLine('Keyframe', keyframe.record)),
         ...expressionUnits.map((expressionUnit) => summaryLine('Expression', expressionUnit.record)),
@@ -430,7 +574,7 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
         schema: 'movscript.content_unit_runtime_panel.v1',
         content_unit_ref: entityDir(context.contentUnit.path),
         content_unit_id: context.contentUnit.id,
-        content_unit_type: 'storyboard_video',
+        content_unit_type: 'storyboard_ref',
         adapter_version: this.version,
         output_kind: 'video',
         input_hash: build.inputVersion.hash,
@@ -461,11 +605,36 @@ function storyboardVideoAdapter(): ContentUnitAdapter {
   }
 }
 
+function contentUnitKeyframes(
+  index: MovScriptWorkspaceDomainIndex,
+  contentUnit: MovScriptWorkspaceIndexedEntity,
+): MovScriptWorkspaceIndexedEntity[] {
+  const refs = [
+    ...arrayField(contentUnit.record.keyframe_refs),
+    ...(idField(contentUnit.record.keyframe_ref) !== undefined ? [contentUnit.record.keyframe_ref] : []),
+  ]
+  const byKey = new Map<string, MovScriptWorkspaceIndexedEntity>()
+  for (const keyframe of refs.map((ref) => findEntityByRef(index, 'keyframe', ref)).filter(isDefined)) {
+    byKey.set(entityKey(keyframe), keyframe)
+  }
+  return [...byKey.values()].sort((left, right) => String(left.id ?? left.path).localeCompare(String(right.id ?? right.path)))
+}
+
 function inputVersionFor(
   adapter: ContentUnitAdapter,
   context: AdapterContext,
   hashInputs: ContentUnitHashInput[],
 ): ContentUnitInputVersion {
+  if (adapter.hashRule.id === 'generic_untracked.hash') {
+    return {
+      schema: 'movscript.input_version.v1',
+      hash: GENERIC_UNTRACKED_INPUT_HASH,
+      compiler_version: context.compilerVersion,
+      adapter_version: adapter.version,
+      content_unit_type: adapter.type,
+      created_at: context.createdAt,
+    }
+  }
   const canonicalInputs = hashInputs
     .filter((input) => input.includedInHash !== false)
     .map((input) => ({
@@ -530,7 +699,7 @@ function readSelectedContentUnit(
 
 function findEntityByRef(
   index: MovScriptWorkspaceDomainIndex,
-  entityKind: 'asset' | 'setting' | 'setting_state' | 'scene_moment' | 'storyboard' | 'keyframe',
+  entityKind: 'asset' | 'setting' | 'setting_state' | 'scene_moment' | 'shot' | 'storyboard' | 'keyframe',
   ref: unknown,
 ): MovScriptWorkspaceIndexedEntity | undefined {
   const value = idField(ref)
@@ -541,6 +710,16 @@ function findEntityByRef(
       const dir = entityDir(entity.path)
       return dir === normalized || entity.path === `${normalized}/${entityKind}.json` || sameEntityRef(entity.id, value, entityKind)
     })
+}
+
+function parentShotForEntity(
+  index: MovScriptWorkspaceDomainIndex,
+  entity: MovScriptWorkspaceIndexedEntity,
+): MovScriptWorkspaceIndexedEntity | undefined {
+  const shotRef = stringField(entity.record.shot_ref)
+  if (shotRef) return findEntityByRef(index, 'shot', shotRef)
+  const shotId = pathSegmentAfter(entity.path, 'shots')
+  return shotId ? findEntityByRef(index, 'shot', shotId) : undefined
 }
 
 function requiredString(value: unknown, message: string): string {
@@ -567,7 +746,7 @@ function assetOwners(index: MovScriptWorkspaceDomainIndex, asset: MovScriptWorks
 }
 
 function hashSourceField(entity: MovScriptWorkspaceIndexedEntity, field: string): ContentUnitHashInput {
-  return { role: field, kind: 'source_field', ref: `${entity.path}#${field}`, value: entity.record[field] }
+  return { role: field, kind: 'source_field', ref: `${entity.path}#${field}`, value: entity.record[field] ?? null }
 }
 
 function hashEntities(
@@ -596,6 +775,10 @@ function entityDir(path: string): string {
   return path.replace(/\/[^/]+$/, '')
 }
 
+function entityKey(entity: MovScriptWorkspaceIndexedEntity): string {
+  return `${entity.entityKind}:${String(entity.id ?? entity.path)}`
+}
+
 function summaryLine(label: string, record: Record<string, unknown> | undefined): string | undefined {
   if (!record) return undefined
   const title = stringField(record.title)
@@ -613,6 +796,11 @@ function arrayField(value: unknown): unknown[] {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function contentUnitOutputKind(value: unknown): ContentUnitOutputKind {
+  if (value === 'image' || value === 'video' || value === 'audio' || value === 'text' || value === 'metadata') return value
+  return 'metadata'
 }
 
 function numberField(value: unknown): number | undefined {

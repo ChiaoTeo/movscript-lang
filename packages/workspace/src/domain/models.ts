@@ -23,6 +23,7 @@ export type WorkspaceEntityKindMap = {
   production_workspace: 'production'
   segment_workspace: 'segment'
   scene_moment_workspace: 'scene_moment'
+  shot_workspace: 'shot'
   storyboard_workspace: 'storyboard'
   audio_cue_workspace: 'audio_cue'
   expression_unit_workspace: 'expression_unit'
@@ -42,6 +43,7 @@ export const WORKSPACE_ENTITY_KIND: WorkspaceEntityKindMap = {
   production_workspace: 'production',
   segment_workspace: 'segment',
   scene_moment_workspace: 'scene_moment',
+  shot_workspace: 'shot',
   storyboard_workspace: 'storyboard',
   audio_cue_workspace: 'audio_cue',
   expression_unit_workspace: 'expression_unit',
@@ -90,7 +92,7 @@ export const MOVSCRIPT_PROJECT_WORKSPACE_MODEL: WorkspaceModel<'project_workspac
     },
     {
       kind: 'content_unit_workspace',
-      children: [{ kind: 'keyframe_workspace', children: [] }],
+      children: [],
     },
     {
       kind: 'production_workspace',
@@ -101,10 +103,12 @@ export const MOVSCRIPT_PROJECT_WORKSPACE_MODEL: WorkspaceModel<'project_workspac
             {
               kind: 'scene_moment_workspace',
               children: [
-                { kind: 'keyframe_workspace', children: [] },
+                { kind: 'shot_workspace', children: [
+                  { kind: 'keyframe_workspace', children: [] },
+                  { kind: 'storyboard_workspace', children: [] },
+                ] },
                 { kind: 'audio_cue_workspace', children: [] },
                 { kind: 'expression_unit_workspace', children: [] },
-                { kind: 'storyboard_workspace', children: [] },
               ],
             },
           ],
@@ -240,16 +244,27 @@ export const MOVSCRIPT_DOMAIN_WORKSPACE_MODELS: Record<MovScriptDomainWorkspaceK
     editablePathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/scene_moment.json'],
     contextPathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/segment.json', 'settings/**'],
     schemaIds: ['movscript.scene_moment.v1'],
-    instructions: ['Scene moments describe planning context and their own transition boundaries. Storyboard order lives on storyboard entities; audio cues are independent child objects.'],
+    instructions: ['Scene moments describe planning context and their own transition boundaries. Shots are the primary children.'],
+  },
+  shot_workspace: {
+    kind: 'shot_workspace',
+    title: 'Shot workspace',
+    entityKinds: ['shot'],
+    editablePathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/shots/{shotSlug}/shot.json'],
+    contextPathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/scene_moment.json', 'settings/**', 'project_standards.json'],
+    schemaIds: ['movscript.shot.v1'],
+    instructions: ['Shots are makeable camera units inside scene moments. Keyframes and storyboards are shot-owned children.'],
   },
   storyboard_workspace: {
     kind: 'storyboard_workspace',
     title: 'Storyboard workspace',
     entityKinds: ['storyboard'],
-    editablePathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/storyboards/{storyboardSlug}/storyboard.json'],
-    contextPathPatterns: ['settings/**', 'project_standards.json'],
+    editablePathPatterns: [
+      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/shots/{shotSlug}/storyboards/{storyboardSlug}/storyboard.json',
+    ],
+    contextPathPatterns: ['productions/**', 'settings/**', 'project_standards.json'],
     schemaIds: ['movscript.storyboard.v1'],
-    instructions: ['Storyboards hold director planning: order, their own transition boundaries, setting refs, shot plans, coverage, continuity, and panels. They do not reference content units.'],
+    instructions: ['Storyboards are shot-owned graph assets, similar to asset slots. Runtime candidates and production decisions are stored outside storyboard.json.'],
   },
   audio_cue_workspace: {
     kind: 'audio_cue_workspace',
@@ -258,7 +273,7 @@ export const MOVSCRIPT_DOMAIN_WORKSPACE_MODELS: Record<MovScriptDomainWorkspaceK
     editablePathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/audio_cues/{audioCueSlug}/audio_cue.json'],
     contextPathPatterns: [
       'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/scene_moment.json',
-      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/storyboards/**',
+      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/shots/**',
       'settings/**',
       'project_standards.json',
     ],
@@ -272,7 +287,7 @@ export const MOVSCRIPT_DOMAIN_WORKSPACE_MODELS: Record<MovScriptDomainWorkspaceK
     editablePathPatterns: ['productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/expression_units/{expressionUnitSlug}/expression_unit.json'],
     contextPathPatterns: [
       'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/scene_moment.json',
-      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/storyboards/**',
+      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/shots/**',
     ],
     schemaIds: ['movscript.expression_unit.v1'],
     instructions: ['Expression units are scene-moment-owned semantic expressions. They may span multiple storyboards, but their ownership stays with the scene moment.'],
@@ -284,19 +299,18 @@ export const MOVSCRIPT_DOMAIN_WORKSPACE_MODELS: Record<MovScriptDomainWorkspaceK
     editablePathPatterns: ['content_units/{contentUnitSlug}/content_unit.json'],
     contextPathPatterns: ['project_standards.json', 'settings/**', 'productions/**'],
     schemaIds: ['movscript.content_unit.v1'],
-    instructions: ['Content units are project-level stable production units. They declare content_unit_type, output_kind, flat business refs, edit_prompt, and model_intent.'],
+    instructions: ['Content units are project-level stable production units. They declare content_unit_type, output_kind, flat business refs, edit_prompt, and model_intent. Specialized content_unit_type adapters perform dependency and regeneration checks; unknown types are valid but untracked for regeneration. Use keyframe_ref content units to reference Keyframe entities owned by storyboards.'],
   },
   keyframe_workspace: {
     kind: 'keyframe_workspace',
     title: 'Keyframe workspace',
     entityKinds: ['keyframe'],
     editablePathPatterns: [
-      'content_units/{contentUnitSlug}/keyframes/{keyframeSlug}/keyframe.json',
-      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/keyframes/{keyframeSlug}/keyframe.json',
+      'productions/{productionSlug}/segments/{segmentSlug}/scene_moments/{sceneMomentSlug}/shots/{shotSlug}/keyframes/{keyframeSlug}/keyframe.json',
     ],
-    contextPathPatterns: ['settings/**', 'project_standards.json'],
+    contextPathPatterns: ['settings/**', 'project_standards.json', 'productions/**'],
     schemaIds: ['movscript.keyframe.v1'],
-    instructions: ['Keyframes are visual anchors. Scene-level and content-unit-level keyframes use the same schema.'],
+    instructions: ['Keyframes are visual anchors owned by shots. Content units reference keyframes through keyframe_ref or keyframe_refs.'],
   },
 }
 

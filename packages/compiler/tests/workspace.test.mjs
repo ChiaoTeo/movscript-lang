@@ -45,9 +45,10 @@ test('workspace domain indexes hierarchical source entities', () => {
 
   assert.equal(queryMovScriptWorkspaceSettings(index, { kind: 'character' }).length, 1)
   assert.equal(index.byKind.get('asset')?.length, 1)
+  assert.equal(index.byKind.get('shot')?.length, 1)
   assert.equal(index.byKind.get('storyboard')?.length, 1)
   assert.equal(index.byKind.get('audio_cue')?.length, 1)
-  assert.equal(index.byKind.get('content_unit')?.length, 2)
+  assert.equal(index.byKind.get('content_unit')?.length, 3)
   assert.equal(index.byKind.get('expression_unit')?.length, 1)
   assert.equal(index.byKind.get('script')?.[0]?.path, 'scripts/main/script.json')
   assert.equal(index.documents.some((document) => document.path === 'scripts/main/script.md'), true)
@@ -72,7 +73,7 @@ test('workspace domain indexes hierarchical source entities', () => {
   assert.equal(context.storyboards.length, 1)
   assert.equal(context.audio_cues.length, 1)
   assert.equal(context.expression_units.length, 1)
-  assert.equal(context.content_units.length, 2)
+  assert.equal(context.content_units.length, 3)
 })
 
 test('compiler build artifacts are derived from canonical source only', () => {
@@ -103,8 +104,9 @@ test('compiler build artifacts are derived from canonical source only', () => {
   assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'audio_cue' && item.entity.id === 'phone_vibration' && item.cueKind === 'sound_effect'))
   assert.ok(artifacts.previewTimelines[0].items.some((item) => item.itemType === 'storyboard' && item.entity.id === 'main' && item.contentUnitIds.includes('k41m')))
   assert.ok(artifacts.impactReport.changedEntities[0].editorImpacts.some((impact) => impact.includes('Content production context')))
-  assert.equal(artifacts.contentUnitArtifacts.length, 2)
-  assert.equal(artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')?.runtimePanel.content_unit_type, 'storyboard_video')
+  assert.equal(artifacts.contentUnitArtifacts.length, 3)
+  assert.equal(artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'k41m')?.runtimePanel.content_unit_type, 'storyboard_ref')
+  assert.equal(artifacts.contentUnitArtifacts.find((artifact) => artifact.contentUnitId === 'cu_scene_anchor_keyframe_ref')?.runtimePanel.content_unit_type, 'keyframe_ref')
 })
 
 test('compiler impact report traces planning and asset changes to affected content units', () => {
@@ -115,7 +117,7 @@ test('compiler impact report traces planning and asset changes to affected conte
       {
         entityKind: 'storyboard',
         id: 'main',
-        path: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json',
+        path: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json',
         state: 'modified',
       },
       {
@@ -127,7 +129,7 @@ test('compiler impact report traces planning and asset changes to affected conte
       {
         entityKind: 'keyframe',
         id: 'scene_anchor',
-        path: 'productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json',
+        path: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json',
         state: 'modified',
       },
     ],
@@ -175,6 +177,104 @@ test('content unit artifacts rebuild runtime panels from edit_prompt plus adapte
   assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'keyframe' && input.continuity_role === 'video_continuity'))
   assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'expression_unit' && input.continuity_role === 'narrative_continuity'))
   assert.ok(video?.dependencyReport.hash_inputs.some((input) => input.role === 'audio_cue' && input.continuity_role === 'sound_continuity'))
+})
+
+test('unknown content unit types are valid but untracked for regeneration', async () => {
+  const files = new Map(sourceFileEntries())
+  files.set('content_units/cu_scene_video_custom/content_unit.json', JSON.stringify({
+    schema: 'movscript.content_unit.v1',
+    kind: 'content_unit',
+    id: 'cu_scene_video_custom',
+    title: 'Custom scene video',
+    content_unit_type: 'scene_video',
+    output_kind: 'video',
+    scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+    storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
+    keyframe_refs: ['scene_anchor'],
+    edit_prompt: { text: 'Custom provider-specific scene video task.' },
+    model_intent: { capability: 'video', duration_sec: 6 },
+  }))
+  const repository = memoryWorkspaceFileRepository(files)
+  const service = createMovScriptWorkspaceService({
+    fileRepository: repository,
+    now: () => new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  const review = await reviewMovScriptBuildWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+  assert.equal(review.readyToBuild, true)
+  assert.equal(review.issues.some((issue) => issue.message.includes('unsupported content_unit_type')), false)
+
+  const initialBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+  assert.equal(initialBuild.status, 'built')
+
+  const initialInput = await service.readContentUnitInputVersion('cu_scene_video_custom')
+  const runtimePanel = await service.readContentUnitRuntimePanel('cu_scene_video_custom')
+  const dependencyReport = await service.readContentUnitDependencyReport('cu_scene_video_custom')
+  assert.equal(runtimePanel?.content_unit_type, 'scene_video')
+  assert.equal(runtimePanel?.adapter_version, 'generic_untracked@1')
+  assert.equal(runtimePanel?.output_kind, 'video')
+  assert.equal(runtimePanel?.runtime_request, undefined)
+  assert.equal(dependencyReport?.dependencies.length, 0)
+  assert.equal(dependencyReport?.upstream_selections.length, 0)
+  assert.equal(dependencyReport?.hash_inputs.length, 0)
+  assert.deepEqual(dependencyReport?.hash_rule.included_roles, [])
+
+  await service.createContentCandidate({
+    contentUnitId: 'cu_scene_video_custom',
+    candidateId: 'candidate_custom_1',
+    inputVersion: initialInput,
+    outputs: [{ kind: 'video', resource_id: 'resource_custom_1', duration_sec: 6 }],
+    createdAt: '2026-06-07T00:01:00.000Z',
+  })
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'cu_scene_video_custom',
+    candidateId: 'candidate_custom_1',
+    resourceId: 'resource_custom_1',
+    acceptedInputHash: 'legacy_provider_hash',
+    reason: 'custom_scene_video_selection',
+    selectedAt: '2026-06-07T00:02:00.000Z',
+  })
+
+  const selectionBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:03:00.000Z'),
+  })
+  assert.equal(selectionBuild.status, 'built')
+  const selectedValidity = await service.readContentUnitSelectionValidity('cu_scene_video_custom')
+  assert.equal(selectedValidity?.accepted_input_hash, 'legacy_provider_hash')
+  assert.equal(selectedValidity?.stale, false)
+
+  const keyframe = JSON.parse(files.get('productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json'))
+  keyframe.visual_intent = 'Rainy apartment scene anchor after an upstream visual change.'
+  keyframe.continuity = { ...keyframe.continuity, lighting: 'colder phone glow after upstream change' }
+  files.set('productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json', `${JSON.stringify(keyframe, null, 2)}\n`)
+
+  const upstreamBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:00.000Z'),
+  })
+  assert.equal(upstreamBuild.status, 'built')
+
+  const nextInput = await service.readContentUnitInputVersion('cu_scene_video_custom')
+  const nextValidity = await service.readContentUnitSelectionValidity('cu_scene_video_custom')
+  const impactReport = JSON.parse(files.get(upstreamBuild.manifest.output.impactReportPath))
+  const changedKeyframe = impactReport.changedEntities.find((entity) => entity.entityKind === 'keyframe' && entity.id === 'scene_anchor')
+  assert.equal(nextInput?.hash, initialInput?.hash)
+  assert.equal(nextValidity?.selected, true)
+  assert.equal(nextValidity?.stale, false)
+  assert.equal(changedKeyframe?.affectedContentUnits.some((entity) => entity.id === 'cu_scene_video_custom'), false)
+
+  const regenerationPlan = await planMovScriptWorkspaceRegeneration({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:30.000Z'),
+  })
+  assert.equal(regenerationPlan.affectedContentUnits.some((target) => target.contentUnitId === 'cu_scene_video_custom'), false)
 })
 
 test('workspace inline candidate writer updates asset json candidates and locks explicitly', async () => {
@@ -226,7 +326,7 @@ test('workspace inline candidate writer updates asset json candidates and locks 
 
 test('workspace inline candidate writer locks existing keyframe candidate', async () => {
   const files = new Map([
-    ['content_units/k41m/keyframes/c83x/keyframe.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/c83x/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
       kind: 'keyframe',
       id: 'c83x',
@@ -236,7 +336,7 @@ test('workspace inline candidate writer locks existing keyframe candidate', asyn
 
   await appendMovScriptInlineCandidate({
     fileRepository: repository,
-    targetPath: 'content_units/k41m/keyframes/c83x/keyframe.json',
+    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/c83x/keyframe.json',
     targetKind: 'keyframe',
     nonce: 'fixed',
     payload: {
@@ -247,7 +347,7 @@ test('workspace inline candidate writer locks existing keyframe candidate', asyn
   })
   const locked = await lockMovScriptInlineCandidate({
     fileRepository: repository,
-    targetPath: 'content_units/k41m/keyframes/c83x/keyframe.json',
+    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/c83x/keyframe.json',
     targetKind: 'keyframe',
     candidateId: 'candidate_resource_keyframe_1_fixed',
     reason: 'selected_for_generation_reference',
@@ -293,6 +393,73 @@ test('workspace content candidate writer stores runtime candidates and selection
   assert.equal(selected.record.accepted_input_hash, 'hash_2')
 })
 
+test('workspace service captures content unit input hash for candidates and keeps stale regeneration across compiles', async () => {
+  const files = new Map(sourceFileEntries())
+  const repository = memoryWorkspaceFileRepository(files)
+  const service = createMovScriptWorkspaceService({
+    fileRepository: repository,
+    now: () => new Date('2026-06-07T00:00:00.000Z'),
+  })
+
+  const firstBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:00:00.000Z'),
+  })
+  assert.equal(firstBuild.status, 'built')
+  const firstInput = await service.readContentUnitInputVersion('k41m')
+  assert.ok(firstInput?.hash)
+
+  await service.createContentCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_auto_hash',
+    outputs: [{ kind: 'video', resource_id: 'resource_video_auto', duration_sec: 4 }],
+    createdAt: '2026-06-07T00:01:00.000Z',
+  })
+  const candidate = JSON.parse(files.get('content_units/k41m/candidates/candidate_auto_hash/content_candidate.json'))
+  assert.equal(candidate.input_version.hash, firstInput.hash)
+  assert.match(candidate.prompt_snapshot.text, /Create a storyboard video/)
+
+  await service.selectContentUnitCandidate({
+    contentUnitId: 'k41m',
+    candidateId: 'candidate_auto_hash',
+    reason: 'selected_without_manual_hash',
+    selectedAt: '2026-06-07T00:02:00.000Z',
+  })
+  const selection = JSON.parse(files.get('content_units/k41m/selection.json'))
+  assert.equal(selection.resource_id, 'resource_video_auto')
+  assert.equal(selection.accepted_input_hash, firstInput.hash)
+
+  const contentUnit = JSON.parse(files.get('content_units/k41m/content_unit.json'))
+  contentUnit.edit_prompt = { text: 'Changed generation context after the first candidate.' }
+  files.set('content_units/k41m/content_unit.json', `${JSON.stringify(contentUnit, null, 2)}\n`)
+
+  const secondBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:03:00.000Z'),
+  })
+  assert.equal(secondBuild.status, 'built')
+  const staleValidity = await service.readContentUnitSelectionValidity('k41m')
+  assert.equal(staleValidity?.accepted_input_hash, firstInput.hash)
+  assert.equal(staleValidity?.stale, true)
+  assert.notEqual(staleValidity?.current_input_hash, firstInput.hash)
+
+  const thirdBuild = await buildMovScriptWorkspace({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:00.000Z'),
+  })
+  assert.equal(thirdBuild.status, 'built')
+  const regenerationPlan = await planMovScriptWorkspaceRegeneration({
+    fileRepository: repository,
+    now: new Date('2026-06-07T00:04:30.000Z'),
+  })
+  const recommendation = regenerationPlan.promptBundles.find((target) => target.contentUnitId === 'k41m')
+  assert.equal(recommendation?.stale, true)
+  assert.equal(recommendation?.candidateId, 'candidate_auto_hash')
+  assert.equal(recommendation?.resourceId, 'resource_video_auto')
+  assert.equal(recommendation?.acceptedInputHash, firstInput.hash)
+  assert.notEqual(recommendation?.currentInputHash, firstInput.hash)
+})
+
 test('workspace content unit prompt updater only changes edit_prompt', async () => {
   const files = new Map([
     ['content_units/k41m/content_unit.json', JSON.stringify({
@@ -300,10 +467,10 @@ test('workspace content unit prompt updater only changes edit_prompt', async () 
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
       edit_prompt: { text: 'Old prompt' },
     })],
   ])
@@ -325,7 +492,7 @@ test('workspace content unit prompt updater only changes edit_prompt', async () 
     notes: 'Keep camera movement restrained.',
   })
   assert.equal(result.record.scene_moment_ref, 'productions/p8f3/segments/a19d/scene_moments/r72k')
-  assert.equal(result.record.storyboard_ref, 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main')
+  assert.equal(result.record.storyboard_ref, 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main')
   const saved = JSON.parse(files.get(result.path))
   assert.equal(saved.edit_prompt.text, 'New prompt')
 })
@@ -345,7 +512,7 @@ test('workspace service facade exposes frontend-oriented domain operations', asy
     sceneMomentId: 'r72k',
   })
   assert.equal(productionContext.storyboards.length, 1)
-  assert.equal(productionContext.content_units.length, 2)
+  assert.equal(productionContext.content_units.length, 3)
 
   await service.updateContentUnitEditPrompt({
     targetPath: 'content_units/k41m/content_unit.json',
@@ -359,24 +526,11 @@ test('workspace service facade exposes frontend-oriented domain operations', asy
     transition: { out: 'hard_cut' },
   })
   await service.updateStoryboardTimeline({
-    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json',
+    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json',
     timeline: {
       gap_after_sec: 0.4,
       caption: 'Phone glow returns.',
     },
-  })
-  await service.updateStoryboardShotPlans({
-    targetPath: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json',
-    shotPlans: [{
-      id: 'shot_plan_1',
-      order: 1,
-      shot_size: 'close_up',
-      camera: { movement: 'slow_push_in', lens_mm: 50 },
-      blocking: { subject: 'hero at window edge' },
-      lighting: { key: 'phone screen blue light' },
-      performance: [{ setting_id: 'hero', expression: 'controlled panic' }],
-      reference_image_refs: ['wet_hair'],
-    }],
   })
   const firstArtifacts = buildMovScriptWorkspaceBuildArtifacts({
     index: await service.loadIndex(),
@@ -488,10 +642,10 @@ test('content unit integration flow writes, compiles, generates, impacts, and re
     selectedAt: '2026-06-07T00:03:00.000Z',
   })
 
-  const keyframe = JSON.parse(files.get('productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json'))
+  const keyframe = JSON.parse(files.get('productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json'))
   keyframe.continuity = { ...keyframe.continuity, hair: 'wet hair pushed across left cheek' }
   keyframe.visual_intent = 'Rainy apartment scene anchor with wet hair pushed across left cheek.'
-  files.set('productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json', `${JSON.stringify(keyframe, null, 2)}\n`)
+  files.set('productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json', `${JSON.stringify(keyframe, null, 2)}\n`)
 
   const impactBuild = await buildMovScriptWorkspace({
     fileRepository: repository,
@@ -825,7 +979,7 @@ test('compiler build reads hierarchical source root and writes derived artifacts
   assert.ok(domainIndex.entities.some((entity) => entity.entityKind === 'content_unit'))
   assert.equal(previewTimeline.schema, 'movscript.preview_timeline.v1')
   assert.equal(runtimePanel.schema, 'movscript.content_unit_runtime_panel.v1')
-  assert.equal(runtimePanel.content_unit_type, 'storyboard_video')
+  assert.equal(runtimePanel.content_unit_type, 'storyboard_ref')
   assert.equal(runtimePanel.input_hash, inputVersion.hash)
   assert.equal(runtimePanel.input_version, undefined)
   assert.equal(runtimePanel.dependency_hashes, undefined)
@@ -1022,7 +1176,7 @@ test('workspace build removes stale content unit artifacts for deleted content u
   files.set('.build/current/content_units/old/runtime_panel.json', JSON.stringify({
     schema: 'movscript.content_unit_runtime_panel.v1',
     content_unit_id: 'old',
-    content_unit_type: 'storyboard_video',
+    content_unit_type: 'storyboard_ref',
   }))
   const repository = memoryWorkspaceFileRepository(files)
 
@@ -1049,10 +1203,10 @@ test('workspace source review rejects path schema mismatch and unresolved conten
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/missing/segments/missing/scene_moments/missing',
-      storyboard_ref: 'productions/missing/segments/missing/scene_moments/missing/storyboards/missing',
+      storyboard_ref: 'productions/missing/segments/missing/scene_moments/missing/shots/missing/storyboards/missing',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -1087,7 +1241,7 @@ test('workspace source review rejects content unit storyboard outside referenced
       title: 'B',
       order: 2,
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/b/storyboards/b/storyboard.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/b/shots/b/storyboards/b/storyboard.json', JSON.stringify({
       schema: 'movscript.storyboard.v1',
       kind: 'storyboard',
       id: 'b',
@@ -1097,10 +1251,10 @@ test('workspace source review rejects content unit storyboard outside referenced
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/a',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/b/storyboards/b',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/b/shots/b/storyboards/b',
     })],
   ])
   const repository = memoryWorkspaceFileRepository(files)
@@ -1128,10 +1282,9 @@ test('workspace source review rejects unresolved storyboard setting refs', async
       title: 'Phone call',
       order: 1,
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
-      schema: 'movscript.storyboard.v1',
-      kind: 'storyboard',
-      id: 'main',
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json', JSON.stringify({
+      
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
       setting_refs: [
         { setting_id: 'missing' },
         { setting_id: 'hero', setting_state_id: 'missing' },
@@ -1167,7 +1320,7 @@ test('workspace source review rejects wrong hierarchy and id directory mismatch'
       id: 'wrong_id',
       slot: 'character_base_portrait',
     })],
-    ['content_units/k41m/keyframes/c83x/keyframe.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/c83x/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
       kind: 'keyframe',
       id: 'other',
@@ -1222,7 +1375,7 @@ test('workspace source review validates min length in source references', async 
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: '',
       storyboard_ref: '',
@@ -1251,20 +1404,19 @@ test('workspace source review rejects unresolved content unit keyframe refs', as
       title: 'Phone call',
       order: 1,
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
-      schema: 'movscript.storyboard.v1',
-      kind: 'storyboard',
-      id: 'main',
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json', JSON.stringify({
+      
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
     })],
     ['content_units/sound_1/content_unit.json', JSON.stringify({
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'sound_1',
       title: 'Phone vibration sound',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
       keyframe_refs: ['missing_keyframe'],
     })],
   ])
@@ -1290,23 +1442,22 @@ test('workspace source review rejects unresolved keyframe reference assets', asy
       title: 'Phone call',
       order: 1,
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
-      schema: 'movscript.storyboard.v1',
-      kind: 'storyboard',
-      id: 'main',
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json', JSON.stringify({
+      
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
     })],
     ['content_units/k41m/content_unit.json', JSON.stringify({
       schema: 'movscript.content_unit.v1',
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
       keyframe_refs: ['c83x'],
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/c83x/keyframe.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/c83x/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
       kind: 'keyframe',
       id: 'c83x',
@@ -1424,23 +1575,50 @@ function sourceFileEntries() {
       order: 1,
       transition: { out: 'hold_then_cut' },
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/keyframes/scene_anchor/keyframe.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/shot.json', JSON.stringify({
+      schema: 'movscript.shot.v1',
+      kind: 'shot',
+      id: 'phone',
+      title: 'Phone close-up',
+      order: 1,
+      shot_size: 'close_up',
+    })],
+    ['content_units/cu_scene_anchor_keyframe_ref/content_unit.json', JSON.stringify({
+      schema: 'movscript.content_unit.v1',
+      kind: 'content_unit',
+      id: 'cu_scene_anchor_keyframe_ref',
+      title: 'Scene anchor keyframe',
+      content_unit_type: 'keyframe_ref',
+      output_kind: 'image',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
+      keyframe_ref: 'scene_anchor',
+      edit_prompt: {
+        text: 'Create the scene anchor keyframe.',
+        negative_text: 'cartoon',
+      },
+      model_intent: { capability: 'image', aspect_ratio: '16:9' },
+    })],
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/keyframes/scene_anchor/keyframe.json', JSON.stringify({
       schema: 'movscript.keyframe.v1',
       kind: 'keyframe',
       id: 'scene_anchor',
+      scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
       title: 'Scene anchor',
       visual_intent: 'Rainy apartment scene anchor.',
       reference_asset_refs: ['wet_hair'],
       continuity: { hair: 'wet and stuck to forehead', lighting: 'cold phone glow' },
     })],
-    ['productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main/storyboard.json', JSON.stringify({
+    ['productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main/storyboard.json', JSON.stringify({
       schema: 'movscript.storyboard.v1',
       kind: 'storyboard',
       id: 'main',
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
       order: 1,
       timeline: { caption: 'Phone glow returns.', gap_after_sec: 0.4 },
       setting_refs: [{ setting_id: 'hero', setting_state_id: 'rain', role: 'subject' }],
-      shot_plans: [{ id: 'shot_plan_1', order: 1, shot_size: 'close_up' }],
     })],
     ['productions/p8f3/segments/a19d/scene_moments/r72k/audio_cues/phone_vibration/audio_cue.json', JSON.stringify({
       schema: 'movscript.audio_cue.v1',
@@ -1450,7 +1628,8 @@ function sourceFileEntries() {
       cue_kind: 'sound_effect',
       order: 1,
       scope_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
       timing: { start: 'after_action', duration_sec: 1.2 },
       prompt_hint: 'Rain low, phone vibration sharp.',
     })],
@@ -1466,10 +1645,11 @@ function sourceFileEntries() {
       kind: 'content_unit',
       id: 'k41m',
       title: 'Phone close-up',
-      content_unit_type: 'storyboard_video',
+      content_unit_type: 'storyboard_ref',
       output_kind: 'video',
       scene_moment_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k',
-      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/storyboards/main',
+      shot_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone',
+      storyboard_ref: 'productions/p8f3/segments/a19d/scene_moments/r72k/shots/phone/storyboards/main',
       keyframe_refs: ['scene_anchor'],
       edit_prompt: {
         text: 'Cold phone light on frightened face.',

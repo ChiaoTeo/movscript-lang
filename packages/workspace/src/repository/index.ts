@@ -43,11 +43,8 @@ export {
 export {
   updateMovScriptEntityTransition,
   updateMovScriptStoryboardTimeline,
-  updateMovScriptStoryboardShotPlans,
   type MovScriptEntityTransitionUpdateInput,
   type MovScriptEntityTransitionUpdateResult,
-  type MovScriptShotPlanUpdateInput,
-  type MovScriptShotPlanUpdateResult,
   type MovScriptStoryboardTimeline,
   type MovScriptStoryboardTimelineUpdateInput,
   type MovScriptStoryboardTimelineUpdateResult,

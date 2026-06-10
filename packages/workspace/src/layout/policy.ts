@@ -74,6 +74,7 @@ export const MOVSCRIPT_SOURCE_ENTITY_FILES = new Set([
   'production.json',
   'segment.json',
   'scene_moment.json',
+  'shot.json',
   'storyboard.json',
   'audio_cue.json',
   'expression_unit.json',

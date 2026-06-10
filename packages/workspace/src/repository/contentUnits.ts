@@ -53,11 +53,12 @@ function normalizeContentUnitRecord(
   const productionId = ref(unit.production_id ?? current.production_id, 'production')
   const segmentId = ref(unit.segment_id ?? current.segment_id, 'segment')
   const sceneMomentId = ref(unit.scene_moment_id ?? current.scene_moment_id, 'scene_moment')
-  const storyboardId = ref(unit.storyboard_id ?? current.storyboard_id ?? 'main', 'storyboard')
+  const shotId = ref(unit.shot_id ?? unit.shotId ?? current.shot_id, 'shot')
+  const storyboardId = ref(unit.storyboard_id ?? unit.storyboardId ?? current.storyboard_id, 'storyboard')
   const contentUnitType = stringValue(unit.content_unit_type ?? unit.contentUnitType ?? current.content_unit_type)
-    ?? 'storyboard_video'
+    ?? 'storyboard_ref'
   const outputKind = stringValue(unit.output_kind ?? unit.outputKind ?? current.output_kind)
-    ?? (contentUnitType === 'asset_ref' ? 'image' : 'video')
+    ?? (contentUnitType === 'asset_ref' || contentUnitType === 'keyframe_ref' ? 'image' : 'video')
 
   return pruneUndefined({
     ...stripWorkspacePrivateFields(current),
@@ -71,8 +72,9 @@ function normalizeContentUnitRecord(
     description: stringValue(unit.description ?? current.description) ?? '',
     scene_moment_ref: stringValue(unit.scene_moment_ref ?? unit.sceneMomentRef ?? current.scene_moment_ref)
       ?? (sceneMomentId ? sceneMomentRef(productionId, segmentId, sceneMomentId) : undefined),
+    shot_id: shotId,
     storyboard_ref: stringValue(unit.storyboard_ref ?? unit.storyboardRef ?? current.storyboard_ref)
-      ?? (sceneMomentId ? storyboardRef(productionId, segmentId, sceneMomentId, storyboardId) : undefined),
+      ?? (sceneMomentId && shotId ? storyboardRef(productionId, segmentId, sceneMomentId, shotId, storyboardId) : undefined),
     asset_ref: stringValue(unit.asset_ref ?? unit.assetRef ?? current.asset_ref),
     keyframe_refs: arrayField(unit.keyframe_refs ?? unit.keyframeRefs ?? current.keyframe_refs),
     audio_cue_refs: arrayField(unit.audio_cue_refs ?? unit.audioCueRefs ?? current.audio_cue_refs),
@@ -103,10 +105,11 @@ function storyboardRef(
   productionId: string | undefined,
   segmentId: string | undefined,
   sceneMomentId: string,
+  shotId: string,
   storyboardId: string | undefined,
 ): string {
   const id = storyboardId ?? 'main'
-  return `${sceneMomentRef(productionId, segmentId, sceneMomentId)}/storyboards/${entityPathSlug(id, 'storyboard')}`
+  return `${sceneMomentRef(productionId, segmentId, sceneMomentId)}/shots/${entityPathSlug(shotId, 'shot')}/storyboards/${entityPathSlug(id, 'storyboard')}`
 }
 
 function stableEntityId(value: unknown, prefix: string): string {
